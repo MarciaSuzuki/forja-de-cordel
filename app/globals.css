@@ -1,0 +1,51 @@
+/* app/globals.css */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --telha: #0f0c08;
+  --telha-light: #2b241b;
+  --verde-claro: #bca679;
+  --verde: #7d6947;
+  --preto: #0f0c08;
+  --parchment: #ead9ae;
+  --parchment-dark: #dcc392;
+  --cream: #f7edcf;
+  --brown-light: #ab9368;
+  --brown-mid: #725d3d;
+  --green-light: #dcc392;
+  --red: #0f0c08;
+  --red-light: #cdb585;
+  --amber: #bca679;
+  --amber-light: #ead9ae;
+}
+
+body {
+  background: var(--preto);
+  color: var(--preto);
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.animate-spin-slow {
+  animation: spin 1s linear infinite;
+}
+
+/* Textarea focus */
+textarea:focus {
+  border-color: var(--telha) !important;
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(171, 147, 104, 0.28);
+}
+
+/* Button hover */
+.btn-primary:hover:not(:disabled) {
+  background: var(--telha-light) !important;
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: rgba(171, 147, 104, 0.22);
+}
