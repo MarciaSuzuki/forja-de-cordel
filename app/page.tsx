@@ -1992,7 +1992,8 @@ export default function ForjaDeCordel() {
               Forja de Cordel
             </h1>
             <p className="mx-auto mt-3 max-w-3xl font-body text-sm uppercase tracking-[0.18em] text-brown-mid sm:text-base">
-              Tradução Oral Performática da Bíblia - Sextilhas em redondilha maior
+              <span className="block">Tradução Oral Performática da Bíblia</span>
+              <span className="mt-1 block">Sextilhas em Redondilha Maior</span>
             </p>
           </div>
         </header>
@@ -2033,7 +2034,7 @@ export default function ForjaDeCordel() {
                       onClick={() => cordelFileInputRef.current?.click()}
                       className="rounded-full border border-preto bg-[var(--parchment-dark)] px-3 py-1.5 font-heading text-xs font-semibold text-preto transition-all"
                     >
-                      Enviar Arquivo
+                      Subir Arquivo
                     </button>
                   </div>
                 </div>
@@ -2044,7 +2045,7 @@ export default function ForjaDeCordel() {
                   placeholder="Cole aqui o cordel completo (sextilhas)..."
                 />
                 <p className="mt-2 font-body text-xs text-brown-mid">
-                  Você pode colar o texto ou enviar um arquivo `.txt` ou `.md`.
+                  Você pode colar o texto ou subir um arquivo `.txt` ou `.md`.
                 </p>
               </div>
               <div>
@@ -2068,7 +2069,7 @@ export default function ForjaDeCordel() {
                       onClick={() => meaningMapFileInputRef.current?.click()}
                       className="rounded-full border border-preto bg-[var(--parchment-dark)] px-3 py-1.5 font-heading text-xs font-semibold text-preto transition-all"
                     >
-                      Enviar Arquivo
+                      Subir Arquivo
                     </button>
                   </div>
                 </div>
@@ -2079,7 +2080,7 @@ export default function ForjaDeCordel() {
                   placeholder="Cole aqui o Mapa de Significado completo (Níveis 1, 2 e 3)..."
                 />
                 <p className="mt-2 font-body text-xs text-brown-mid">
-                  Você pode colar o texto ou enviar um arquivo `.txt` ou `.md`.
+                  Você pode colar o texto ou subir um arquivo `.txt` ou `.md`.
                 </p>
               </div>
             </div>
