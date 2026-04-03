@@ -47,6 +47,14 @@ interface Adicao {
   avaliacao: string;
 }
 
+interface RecordedAudio {
+  url: string;
+  fileName: string;
+  mimeType: string;
+}
+
+const UNSPECIFIED_ADDITION_TEXT = "Trecho não especificado pela análise.";
+
 interface AnalysisData {
   estrofes: EstrofeAnalysis[];
   fidelidade: FidelidadeItem[];
@@ -156,6 +164,130 @@ function extractPsalmNumber(text: string) {
 function formatStoredMoment(value: string) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : fmtDateTime(date);
+}
+
+function sanitizeFragment(value: unknown) {
+  if (typeof value !== "string") return "";
+  return value.trim();
+}
+
+function extractQuotedFragment(value: string) {
+  const match = value.match(/[“"']([^”"']{2,})[”"']/);
+  return match ? match[1].trim() : "";
+}
+
+function normalizeAddition(raw: any): Adicao {
+  if (typeof raw === "string") {
+    const estrofeMatch = raw.match(/estrofe\s*(\d+)/i);
+    const trecho = extractQuotedFragment(raw) || raw.replace(/estrofe\s*\d+\s*:?\s*/i, "").trim();
+    return {
+      estrofe: estrofeMatch ? Number(estrofeMatch[1]) : 0,
+      texto: trecho || UNSPECIFIED_ADDITION_TEXT,
+      avaliacao: raw,
+    };
+  }
+
+  const texto =
+    sanitizeFragment(raw?.texto) ||
+    sanitizeFragment(raw?.trecho) ||
+    sanitizeFragment(raw?.adicao) ||
+    sanitizeFragment(raw?.texto_adicionado) ||
+    sanitizeFragment(raw?.fragmento) ||
+    extractQuotedFragment(
+      sanitizeFragment(raw?.avaliacao) ||
+        sanitizeFragment(raw?.motivo) ||
+        sanitizeFragment(raw?.nota)
+    );
+
+  const avaliacao =
+    sanitizeFragment(raw?.avaliacao) ||
+    sanitizeFragment(raw?.motivo) ||
+    sanitizeFragment(raw?.nota) ||
+    sanitizeFragment(raw?.comentario) ||
+    (texto ? `Trecho adicional detectado: "${texto}"` : "Adição semântica detectada.");
+
+  const estrofeValue =
+    raw?.estrofe ?? raw?.estrofa ?? raw?.strophe ?? raw?.verso ?? raw?.numero;
+  const estrofe = Number.isFinite(Number(estrofeValue)) ? Number(estrofeValue) : 0;
+
+  return {
+    estrofe,
+    texto: texto || UNSPECIFIED_ADDITION_TEXT,
+    avaliacao,
+  };
+}
+
+function normalizeAnalysisData(raw: any): AnalysisData {
+  return {
+    estrofes: Array.isArray(raw?.estrofes) ? raw.estrofes : [],
+    fidelidade: Array.isArray(raw?.fidelidade) ? raw.fidelidade : [],
+    adicoes: Array.isArray(raw?.adicoes) ? raw.adicoes.map(normalizeAddition) : [],
+  };
+}
+
+function buildCordelFileName(psalmNumber: number | null) {
+  const prefix = psalmNumber ? `salmo-${String(psalmNumber).padStart(3, "0")}` : "cordel";
+  return `${prefix}-aprovado.txt`;
+}
+
+function formatAdditionLocation(estrofe: number) {
+  return estrofe > 0 ? `Estrofe ${estrofe}` : "Trecho sem estrofe identificada";
+}
+
+function buildReportFileName(psalmNumber: number | null) {
+  const prefix = psalmNumber ? `salmo-${String(psalmNumber).padStart(3, "0")}` : "relatorio-cordel";
+  return `${prefix}-relatorio-final.md`;
+}
+
+function findEstrofeText(cordelData: CordelData | null, estrofeNumero: number) {
+  if (!cordelData || estrofeNumero <= 0) return "";
+  const estrofe = cordelData.estrofes.find((item) => item.numero === estrofeNumero);
+  return estrofe ? estrofe.versos.join(" / ") : "";
+}
+
+function formatAdditionText(addition: Adicao, cordelData: CordelData | null) {
+  if (addition.texto && addition.texto !== UNSPECIFIED_ADDITION_TEXT) {
+    return addition.texto;
+  }
+
+  return findEstrofeText(cordelData, addition.estrofe) || addition.texto;
+}
+
+function downloadTextFile(contents: string, fileName: string, mimeType: string) {
+  const blob = new Blob([contents], { type: `${mimeType};charset=utf-8` });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function downloadRemoteFile(url: string, fileName: string) {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error("Não foi possível preparar o download do arquivo.");
+  }
+
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(objectUrl);
+}
+
+async function readUploadedTextFile(file: File) {
+  const text = await file.text();
+  if (!text.trim()) {
+    throw new Error(`O arquivo "${file.name}" está vazio.`);
+  }
+  return text;
 }
 
 function cordelToPlainText(data: CordelData) {
@@ -296,6 +428,7 @@ function buildReportText({
   revisionCount,
   audioFileName,
   audioUrl,
+  userAudio,
 }: {
   inputMode: InputMode;
   meaningMapText: string;
@@ -306,6 +439,7 @@ function buildReportText({
   revisionCount: number;
   audioFileName: string | null;
   audioUrl: string | null;
+  userAudio: RecordedAudio | null;
 }) {
   if (!cordelData) return "";
 
@@ -321,7 +455,10 @@ function buildReportText({
     ? analysisData.adicoes
         .map(
           (item) =>
-            `- Estrofe ${item.estrofe}: "${item.texto}"\n  Motivo: ${item.avaliacao}`
+            `- ${formatAdditionLocation(item.estrofe)}: "${formatAdditionText(
+              item,
+              cordelData
+            )}"\n  Motivo: ${item.avaliacao}`
         )
         .join("\n")
     : "- Nenhuma adição semântica detectada.";
@@ -353,9 +490,9 @@ function buildReportText({
     "",
     `- Última atualização: ${lastEvent}`,
     `- Modo de entrada: ${
-      inputMode === "compose"
-        ? "Compor do Mapa de Significado"
-        : "Analisar Cordel Existente"
+      inputMode === "analyze-existing"
+        ? "Analisar Cordel"
+        : "Analisar Cordel"
     }`,
     `- Estado da análise: ${analysisStatus}`,
     `- Revisões automáticas realizadas: ${revisionCount}`,
@@ -365,6 +502,9 @@ function buildReportText({
         : "Ainda não gerado."
     }`,
     audioUrl ? `- Link do áudio: ${audioUrl}` : null,
+    `- Declamação do usuário: ${
+      userAudio?.fileName ? `Disponível (${userAudio.fileName}).` : "Ainda não gravada."
+    }`,
     "",
     "## Resumo Quantitativo",
     `- Estrofes finais: ${cordelData.estrofes.length}`,
@@ -538,14 +678,12 @@ function PipelineBadges({
 
   return (
     <div className="flex flex-wrap gap-2 items-center mb-5">
-      <span className={done}>✓ Planejador</span>
-      <span className={done}>✓ Vocabulário</span>
-      <span className={done}>✓ Compositor</span>
+      <span className={done}>✓ Cordel</span>
       <span className={phase === "analyzed" ? done : pending}>
         {phase === "analyzed" ? "✓" : "○"} Análise
       </span>
       {revisionCount > 0 && (
-        <span className={rev}>Rev. {revisionCount}/3</span>
+        <span className={rev}>Revisão {revisionCount}/3</span>
       )}
     </div>
   );
@@ -558,18 +696,25 @@ function CordelView({
   analysisData,
   analysisDirty,
   audioUrl,
+  userAudio,
   audioLoading,
+  userAudioRecording,
   audioError,
+  userAudioError,
   onVerseChange,
   onVerseCommit,
   onListen,
+  onRecord,
 }: {
   data: CordelData;
   analysisData: AnalysisData | null;
   analysisDirty: boolean;
   audioUrl: string | null;
+  userAudio: RecordedAudio | null;
   audioLoading: boolean;
+  userAudioRecording: boolean;
   audioError: string;
+  userAudioError: string;
   onVerseChange: (estrofeNumero: number, versoIndex: number, value: string) => void;
   onVerseCommit: (
     estrofeNumero: number,
@@ -578,6 +723,7 @@ function CordelView({
     nextValue: string
   ) => void;
   onListen: () => void;
+  onRecord: () => void;
 }) {
   return (
     <div>
@@ -589,7 +735,7 @@ function CordelView({
           {analysisData.adicoes.map((a, i) => (
             <div key={`${a.estrofe}-${i}`} className="py-1.5 border-b border-preto/10 last:border-b-0">
               <div className="font-body text-sm text-preto">
-                Adição detectada na estrofe {a.estrofe}: <span className="italic">&ldquo;{a.texto}&rdquo;</span>
+                Adição detectada em {formatAdditionLocation(a.estrofe).toLowerCase()}: <span className="italic">&ldquo;{formatAdditionText(a, data)}&rdquo;</span>
               </div>
               <div className="font-mono text-[11px] text-brown-mid mt-1">Motivo: {a.avaliacao}</div>
             </div>
@@ -644,7 +790,7 @@ function CordelView({
       ))}
 
       {/* Listen button */}
-      <div className="mt-4 flex items-center gap-3">
+      <div className="mt-4 flex flex-wrap items-center gap-3">
         <button
           onClick={onListen}
           disabled={audioLoading}
@@ -655,11 +801,30 @@ function CordelView({
           </svg>
           {audioLoading ? "Gerando áudio…" : "Ouvir Cordel"}
         </button>
+        <button
+          onClick={onRecord}
+          className={`btn-secondary flex items-center gap-2 rounded-full border-2 border-preto px-5 py-2.5 font-heading text-sm font-bold transition-all ${
+            userAudioRecording
+              ? "bg-preto text-cream"
+              : "bg-cream text-preto"
+          }`}
+        >
+          <svg viewBox="0 0 24 24" className="w-4 h-4" fill="currentColor">
+            <circle cx="12" cy="12" r="7" />
+          </svg>
+          {userAudioRecording ? "Parar Gravação" : "Gravar Cordel"}
+        </button>
         {audioUrl && (
           <audio controls src={audioUrl} className="h-8" />
         )}
+        {userAudio?.url && (
+          <audio controls src={userAudio.url} className="h-8" />
+        )}
         {audioError && (
           <span className="font-mono text-xs text-[var(--red)]">{audioError}</span>
+        )}
+        {userAudioError && (
+          <span className="font-mono text-xs text-[var(--red)]">{userAudioError}</span>
         )}
       </div>
     </div>
@@ -668,22 +833,34 @@ function CordelView({
 
 function ReportView({
   reportText,
+  cordelText,
+  psalmNumber,
   historyEntries,
   analysisData,
   analysisDirty,
   audioUrl,
   audioFileName,
+  userAudio,
   onCopyReport,
   onDownloadReport,
+  onDownloadCordel,
+  onDownloadElevenLabsAudio,
+  onDownloadUserAudio,
 }: {
   reportText: string;
+  cordelText: string;
+  psalmNumber: number | null;
   historyEntries: HistoryEntry[];
   analysisData: AnalysisData | null;
   analysisDirty: boolean;
   audioUrl: string | null;
   audioFileName: string | null;
+  userAudio: RecordedAudio | null;
   onCopyReport: () => void;
   onDownloadReport: () => void;
+  onDownloadCordel: () => void;
+  onDownloadElevenLabsAudio: () => void;
+  onDownloadUserAudio: () => void;
 }) {
   const summary = summarizeAnalysis(analysisData);
 
@@ -724,6 +901,13 @@ function ReportView({
 
       <div className="mb-4 flex flex-wrap gap-2.5">
         <button
+          onClick={onDownloadCordel}
+          disabled={!cordelText}
+          className="btn-secondary cursor-pointer rounded-full border-2 border-preto bg-cream px-5 py-2.5 font-heading text-sm font-bold text-preto transition-all disabled:opacity-50"
+        >
+          Baixar Cordel Aprovado
+        </button>
+        <button
           onClick={onCopyReport}
           className="btn-secondary cursor-pointer rounded-full border-2 border-preto bg-cream px-5 py-2.5 font-heading text-sm font-bold text-preto transition-all"
         >
@@ -735,20 +919,25 @@ function ReportView({
         >
           Baixar Relatório
         </button>
-        {audioUrl ? (
-          <a
-            href={audioUrl}
-            download={audioFileName || "cordel-final.mp3"}
-            className="btn-secondary cursor-pointer rounded-full border-2 border-preto bg-cream px-5 py-2.5 font-heading text-sm font-bold text-preto transition-all"
-          >
-            Baixar Áudio
-          </a>
-        ) : null}
+        <button
+          onClick={onDownloadElevenLabsAudio}
+          disabled={!audioUrl}
+          className="btn-secondary cursor-pointer rounded-full border-2 border-preto bg-cream px-5 py-2.5 font-heading text-sm font-bold text-preto transition-all disabled:opacity-50"
+        >
+          Baixar Áudio ElevenLabs
+        </button>
+        <button
+          onClick={onDownloadUserAudio}
+          disabled={!userAudio?.url}
+          className="btn-secondary cursor-pointer rounded-full border-2 border-preto bg-cream px-5 py-2.5 font-heading text-sm font-bold text-preto transition-all disabled:opacity-50"
+        >
+          Baixar Áudio do Usuário
+        </button>
       </div>
 
       <div className="rounded-[20px] border-2 border-preto bg-cream p-5 shadow-[inset_0_0_0_1px_rgba(15,12,8,0.06)]">
         <div className="font-heading text-xs font-bold text-brown-light uppercase tracking-widest mb-2.5">
-          Relatório Final
+          Relatório Final{psalmNumber ? ` · Salmo ${psalmNumber}` : ""}
         </div>
         <textarea
           readOnly
@@ -989,7 +1178,13 @@ function MetricaView({ data }: { data: AnalysisData }) {
   );
 }
 
-function FidelidadeView({ data }: { data: AnalysisData }) {
+function FidelidadeView({
+  data,
+  cordelData,
+}: {
+  data: AnalysisData;
+  cordelData: CordelData;
+}) {
   const statusStyle: Record<string, string> = {
     PRESENTE: "bg-preto text-cream border border-preto",
     PARCIAL: "bg-[var(--amber-light)] text-preto border border-preto/20",
@@ -1038,7 +1233,7 @@ function FidelidadeView({ data }: { data: AnalysisData }) {
               className="py-1.5 border-b border-parchment-dark"
             >
               <span className="font-body text-sm italic">
-                Adição detectada: &ldquo;{a.texto}&rdquo; (Est. {a.estrofe})
+                Adição detectada em {formatAdditionLocation(a.estrofe).toLowerCase()}: &ldquo;{formatAdditionText(a, cordelData)}&rdquo;
               </span>
               <br />
               <span className="font-mono text-xs text-brown-mid">
@@ -1058,7 +1253,7 @@ export default function ForjaDeCordel() {
   const [meaningMapInput, setMeaningMapInput] = useState("");
   const [existingCordelInput, setExistingCordelInput] = useState("");
   const [psalmNumberInput, setPsalmNumberInput] = useState("");
-  const [inputMode, setInputMode] = useState<InputMode>("compose");
+  const [inputMode, setInputMode] = useState<InputMode>("analyze-existing");
   const [phase, setPhase] = useState<Phase>("input");
   const [cordelData, setCordelData] = useState<CordelData | null>(null);
   const [analysisData, setAnalysisData] = useState<AnalysisData | null>(null);
@@ -1079,12 +1274,22 @@ export default function ForjaDeCordel() {
   const [audioPathname, setAudioPathname] = useState<string | null>(null);
   const [audioLoading, setAudioLoading] = useState(false);
   const [audioError, setAudioError] = useState("");
+  const [userAudio, setUserAudio] = useState<RecordedAudio | null>(null);
+  const [userAudioRecording, setUserAudioRecording] = useState(false);
+  const [userAudioError, setUserAudioError] = useState("");
 
-  const isLoading = ["composing", "analyzing", "revising"].includes(phase);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const recordingChunksRef = useRef<Blob[]>([]);
+  const userAudioObjectUrlRef = useRef<string | null>(null);
+  const discardRecordedAudioRef = useRef(false);
+  const cordelFileInputRef = useRef<HTMLInputElement | null>(null);
+  const meaningMapFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const isLoading = ["analyzing", "revising"].includes(phase);
   const elapsed = useTimer(isLoading);
 
   const phaseLabels: Record<string, string> = {
-    composing: "Forjando sextilhas (3 agentes)",
     analyzing: "Analisando métrica e fidelidade",
     revising: "Revisando estrofes com problemas",
   };
@@ -1113,6 +1318,24 @@ export default function ForjaDeCordel() {
     []
   );
 
+  const clearUserAudio = useCallback(() => {
+    discardRecordedAudioRef.current = true;
+    if (mediaRecorderRef.current?.state && mediaRecorderRef.current.state !== "inactive") {
+      mediaRecorderRef.current.stop();
+    }
+    mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+    mediaStreamRef.current = null;
+    mediaRecorderRef.current = null;
+    recordingChunksRef.current = [];
+    setUserAudioRecording(false);
+    if (userAudioObjectUrlRef.current) {
+      URL.revokeObjectURL(userAudioObjectUrlRef.current);
+      userAudioObjectUrlRef.current = null;
+    }
+    setUserAudio(null);
+    setUserAudioError("");
+  }, []);
+
   const refreshCatalog = useCallback(async () => {
     try {
       setCatalogLoading(true);
@@ -1129,6 +1352,19 @@ export default function ForjaDeCordel() {
   useEffect(() => {
     refreshCatalog();
   }, [refreshCatalog]);
+
+  useEffect(() => {
+    return () => {
+      discardRecordedAudioRef.current = true;
+      if (mediaRecorderRef.current?.state && mediaRecorderRef.current.state !== "inactive") {
+        mediaRecorderRef.current.stop();
+      }
+      mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+      if (userAudioObjectUrlRef.current) {
+        URL.revokeObjectURL(userAudioObjectUrlRef.current);
+      }
+    };
+  }, []);
 
   const inferredPsalmNumber = extractPsalmNumber(meaningMapText || meaningMapInput);
   const currentPsalmNumber = normalizePsalmNumber(psalmNumberInput) ?? inferredPsalmNumber;
@@ -1180,6 +1416,7 @@ export default function ForjaDeCordel() {
   const handleAnalyzeExisting = useCallback(() => {
     if (!existingCordelInput.trim() || !meaningMapInput.trim()) return;
     setError("");
+    setInputMode("analyze-existing");
     setCordelData(null);
     setAnalysisData(null);
     setAnalysisDirty(false);
@@ -1190,6 +1427,7 @@ export default function ForjaDeCordel() {
     setAudioFileName(null);
     setAudioPathname(null);
     setAudioError("");
+    clearUserAudio();
 
     try {
       const cordel = parseExistingCordelText(existingCordelInput);
@@ -1212,7 +1450,7 @@ export default function ForjaDeCordel() {
       setError(e.message);
       setPhase("error");
     }
-  }, [existingCordelInput, meaningMapInput]);
+  }, [clearUserAudio, existingCordelInput, meaningMapInput]);
 
   const handleAnalyze = useCallback(async () => {
     const propositions = extractPropositionsText(meaningMapText);
@@ -1227,9 +1465,10 @@ export default function ForjaDeCordel() {
         cordel: cordelData,
         propositions,
       });
-      setAnalysisData(data.analysis);
+      const normalizedAnalysis = normalizeAnalysisData(data.analysis);
+      setAnalysisData(normalizedAnalysis);
       setAnalysisDirty(false);
-      const summary = summarizeAnalysis(data.analysis);
+      const summary = summarizeAnalysis(normalizedAnalysis);
       appendHistory({
         tipo: "analise",
         titulo: "Análise métrica e de fidelidade concluída",
@@ -1263,7 +1502,12 @@ export default function ForjaDeCordel() {
           issues.push(`Estrofe ${est.numero}: rima falhou`);
       });
       analysisData.adicoes?.forEach((a) =>
-        issues.push(`Estrofe ${a.estrofe}: adição — "${a.texto}"`)
+        issues.push(
+          `${formatAdditionLocation(a.estrofe)}: adição — "${formatAdditionText(
+            a,
+            cordelData
+          )}"`
+        )
       );
       analysisData.fidelidade
         ?.filter((f) => f.status === "AUSENTE")
@@ -1292,11 +1536,12 @@ export default function ForjaDeCordel() {
       setAudioUrl(null);
       setAudioFileName(null);
       setAudioPathname(null);
+      clearUserAudio();
     } catch (e: any) {
       setError(e.message);
       setPhase("error");
     }
-  }, [appendHistory, cordelData, analysisData, meaningMapText, revisionCount]);
+  }, [appendHistory, clearUserAudio, cordelData, analysisData, meaningMapText, revisionCount]);
 
   const handleListen = useCallback(async () => {
     if (!cordelData) return;
@@ -1359,6 +1604,102 @@ export default function ForjaDeCordel() {
     }
   }, [appendHistory, cordelData, currentPsalmNumber]);
 
+  const handleRecord = useCallback(async () => {
+    if (typeof window === "undefined") return;
+
+    if (userAudioRecording) {
+      mediaRecorderRef.current?.stop();
+      setUserAudioRecording(false);
+      return;
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      setUserAudioError("Este navegador não suporta gravação de áudio.");
+      return;
+    }
+
+    try {
+      setUserAudioError("");
+      clearUserAudio();
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaStreamRef.current = stream;
+
+      const mimeTypes = [
+        "audio/webm;codecs=opus",
+        "audio/webm",
+        "audio/mp4",
+        "audio/mpeg",
+      ];
+      const mimeType = mimeTypes.find((candidate) =>
+        MediaRecorder.isTypeSupported(candidate)
+      );
+      const recorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream);
+
+      discardRecordedAudioRef.current = false;
+      recordingChunksRef.current = [];
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          recordingChunksRef.current.push(event.data);
+        }
+      };
+      recorder.onerror = () => {
+        setUserAudioError("Não foi possível gravar a declamação.");
+      };
+      recorder.onstop = () => {
+        const shouldDiscard = discardRecordedAudioRef.current;
+        discardRecordedAudioRef.current = false;
+        const finalMimeType = recorder.mimeType || mimeType || "audio/webm";
+        const extension = finalMimeType.includes("mp4")
+          ? "m4a"
+          : finalMimeType.includes("mpeg")
+          ? "mp3"
+          : "webm";
+        if (!shouldDiscard) {
+          const blob = new Blob(recordingChunksRef.current, { type: finalMimeType });
+          const url = URL.createObjectURL(blob);
+          userAudioObjectUrlRef.current = url;
+          const fileName = `declamacao-usuario-${new Date()
+            .toISOString()
+            .replace(/[:.]/g, "-")}.${extension}`;
+
+          setUserAudio({
+            url,
+            fileName,
+            mimeType: finalMimeType,
+          });
+          appendHistory({
+            tipo: "audio",
+            titulo: "Declamação do cordel gravada",
+            detalhes: [`Arquivo pronto para download: ${fileName}`],
+          });
+        }
+        setUserAudioRecording(false);
+        mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+        mediaStreamRef.current = null;
+        mediaRecorderRef.current = null;
+        recordingChunksRef.current = [];
+      };
+
+      mediaRecorderRef.current = recorder;
+      recorder.start();
+      setUserAudioRecording(true);
+      appendHistory({
+        tipo: "audio",
+        titulo: "Gravação da declamação iniciada",
+        detalhes: ["O navegador está capturando o áudio do microfone."],
+      });
+    } catch (e: any) {
+      setUserAudioRecording(false);
+      setUserAudioError(e?.message || "Não foi possível acessar o microfone.");
+      mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
+      mediaRecorderRef.current = null;
+    }
+  }, [appendHistory, clearUserAudio, userAudioRecording]);
+
   const handleCordelVerseChange = useCallback(
     (estrofeNumero: number, versoIndex: number, value: string) => {
       setCordelData((current) => {
@@ -1387,8 +1728,9 @@ export default function ForjaDeCordel() {
       setAudioFileName(null);
       setAudioPathname(null);
       setAudioError("");
+      clearUserAudio();
     },
-    [analysisData, phase]
+    [analysisData, clearUserAudio, phase]
   );
 
   const handleCordelVerseCommit = useCallback(
@@ -1415,6 +1757,25 @@ export default function ForjaDeCordel() {
     setCatalogError("");
   }, []);
 
+  const handleTextUpload = useCallback(
+    async (kind: "cordel" | "meaning-map", file: File | null) => {
+      if (!file) return;
+
+      try {
+        const text = await readUploadedTextFile(file);
+        if (kind === "cordel") {
+          setExistingCordelInput(text);
+        } else {
+          setMeaningMapInput(text);
+        }
+        setError("");
+      } catch (e: any) {
+        setError(e?.message || "Não foi possível ler o arquivo enviado.");
+      }
+    },
+    []
+  );
+
   const reportText = buildReportText({
     inputMode,
     meaningMapText,
@@ -1425,7 +1786,10 @@ export default function ForjaDeCordel() {
     revisionCount,
     audioFileName,
     audioUrl,
+    userAudio,
   });
+
+  const cordelText = cordelData ? cordelToPlainText(cordelData) : "";
 
   const handleLoadPsalm = useCallback(
     async (psalm: number) => {
@@ -1442,14 +1806,15 @@ export default function ForjaDeCordel() {
         setCatalogSyncing(true);
         const data = await apiGet(`/api/psalms/${psalm}`);
         const record: SavedPsalmRecord = data.record;
+        const normalizedAnalysis = normalizeAnalysisData(record.analysisData);
 
-        setInputMode(record.modo);
+        setInputMode("analyze-existing");
         setMeaningMapInput(record.meaningMapText);
         setMeaningMapText(record.meaningMapText);
         setExistingCordelInput(cordelToPlainText(record.cordelData));
         setPsalmNumberInput(String(record.salmo));
         setCordelData(record.cordelData);
-        setAnalysisData(record.analysisData);
+        setAnalysisData(record.analysisData ? normalizedAnalysis : null);
         setAnalysisDirty(record.analysisDirty);
         setHistoryEntries(record.historyEntries);
         setRevisionCount(record.revisionCount);
@@ -1459,6 +1824,7 @@ export default function ForjaDeCordel() {
         setAudioFileName(record.audioFileName);
         setAudioPathname(record.audioPathname || null);
         setAudioError("");
+        clearUserAudio();
         setCatalogError("");
         setError("");
       } catch (e: any) {
@@ -1468,7 +1834,7 @@ export default function ForjaDeCordel() {
         setCatalogSyncing(false);
       }
     },
-    [cordelData]
+    [clearUserAudio, cordelData]
   );
 
   const handleSaveCurrentPsalm = useCallback(async () => {
@@ -1505,7 +1871,7 @@ export default function ForjaDeCordel() {
       audioUrl && /^https?:\/\//i.test(audioUrl) ? audioUrl : null;
     const nextRecord: SavedPsalmRecord = {
       salmo: currentPsalmNumber,
-      modo: inputMode,
+      modo: "analyze-existing",
       status: derivePsalmStatus({ analysisData, analysisDirty }),
       salvoEm: new Date().toISOString(),
       analysisDirty,
@@ -1564,18 +1930,31 @@ export default function ForjaDeCordel() {
 
   const handleDownloadReport = useCallback(() => {
     if (!reportText) return;
-    const blob = new Blob([reportText], { type: "text/markdown;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `relatorio-cordel-${new Date()
-      .toISOString()
-      .replace(/[:.]/g, "-")}.md`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
-  }, [reportText]);
+    downloadTextFile(reportText, buildReportFileName(currentPsalmNumber), "text/markdown");
+  }, [currentPsalmNumber, reportText]);
+
+  const handleDownloadCordel = useCallback(() => {
+    if (!cordelText) return;
+    downloadTextFile(cordelText, buildCordelFileName(currentPsalmNumber), "text/plain");
+  }, [cordelText, currentPsalmNumber]);
+
+  const handleDownloadElevenLabsAudio = useCallback(async () => {
+    if (!audioUrl) return;
+    try {
+      await downloadRemoteFile(audioUrl, audioFileName || "audio-elevenlabs.mp3");
+    } catch (e: any) {
+      setAudioError(e.message);
+    }
+  }, [audioFileName, audioUrl]);
+
+  const handleDownloadUserAudio = useCallback(async () => {
+    if (!userAudio?.url) return;
+    try {
+      await downloadRemoteFile(userAudio.url, userAudio.fileName);
+    } catch (e: any) {
+      setUserAudioError(e.message);
+    }
+  }, [userAudio]);
 
   const hasIssues = hasAnalysisIssues(analysisData);
 
@@ -1595,11 +1974,8 @@ export default function ForjaDeCordel() {
         : `Salvar Salmo ${currentPsalmNumber}`
       : "Salvar no Catálogo";
   const canSaveCurrentPsalm = !!cordelData && currentPsalmNumber != null;
-
   const inputInstruction =
-    inputMode === "compose"
-      ? "Cole o Mapa de Significado completo (Níveis 1, 2 e 3). O texto será dividido automaticamente entre três agentes especializados."
-      : "Cole o cordel completo e o Mapa de Significado em seus campos separados. O cordel será analisado diretamente, e o mapa servirá para a checagem de fidelidade.";
+    "Cole o cordel completo e o Mapa de Significado em seus campos separados. O cordel será analisado diretamente, e o mapa servirá para a checagem de fidelidade teológica.";
 
   // ── Render ──
 
@@ -1629,70 +2005,84 @@ export default function ForjaDeCordel() {
             <label className="font-heading text-xs font-semibold text-brown-mid uppercase tracking-widest block mb-2">
               Modo de Trabalho
             </label>
-            <div className="flex flex-wrap gap-2 mb-3">
-              <button
-                onClick={() => {
-                  setInputMode("compose");
-                  setError("");
-                }}
-                className={`font-heading text-sm font-bold px-4 py-2 rounded-full border-2 transition-all ${
-                  inputMode === "compose"
-                    ? "bg-preto text-cream border-preto"
-                    : "bg-cream text-preto border-preto"
-                }`}
-              >
-                Compor do Mapa de Significado
-              </button>
-              <button
-                onClick={() => {
-                  setInputMode("analyze-existing");
-                  setError("");
-                }}
-                className={`font-heading text-sm font-bold px-4 py-2 rounded-full border-2 transition-all ${
-                  inputMode === "analyze-existing"
-                    ? "bg-preto text-cream border-preto"
-                    : "bg-cream text-preto border-preto"
-                }`}
-              >
-                Analisar Cordel Existente
-              </button>
+            <div className="mb-3 inline-flex rounded-full border-2 border-preto bg-preto px-4 py-2 font-heading text-sm font-bold text-cream">
+              Analisar Cordel
             </div>
             <div className="mb-4 rounded-[18px] border-2 border-preto bg-[var(--parchment-dark)] px-4 py-3 font-body text-[13px] leading-relaxed text-preto">
               {inputInstruction}
             </div>
-            {inputMode === "compose" ? (
-              <textarea
-                className="w-full min-h-[240px] resize-y rounded-[18px] border-2 border-preto bg-cream p-4 font-body text-sm leading-relaxed text-preto shadow-[inset_0_0_0_1px_rgba(15,12,8,0.08)]"
-                value={meaningMapInput}
-                onChange={(e) => setMeaningMapInput(e.target.value)}
-                placeholder="# Exemplo trabalhado: Salmo 1\n## Mapa de Significado completo\n\n## Level 1 — A forma\n...\n\n## Level 2 — Cena 1: Versos 1–3\n...\n\n## Level 3 — Proposições\n..."
-              />
-            ) : (
-              <div className="space-y-4">
-                <div>
-                  <label className="font-heading text-xs font-semibold text-brown-mid uppercase tracking-widest block mb-2">
+            <div className="space-y-4">
+              <div>
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                  <label className="font-heading text-xs font-semibold text-brown-mid uppercase tracking-widest block">
                     Cordel
                   </label>
-                  <textarea
-                    className="w-full min-h-[240px] resize-y rounded-[18px] border-2 border-preto bg-cream p-4 font-body text-sm leading-relaxed text-preto shadow-[inset_0_0_0_1px_rgba(15,12,8,0.08)]"
-                    value={existingCordelInput}
-                    onChange={(e) => setExistingCordelInput(e.target.value)}
-                    placeholder="Cole aqui o cordel completo (sextilhas)..."
-                  />
+                  <div className="flex items-center gap-2">
+                    <input
+                      ref={cordelFileInputRef}
+                      type="file"
+                      accept=".txt,.md,.text"
+                      className="hidden"
+                      onChange={(e) => {
+                        void handleTextUpload("cordel", e.target.files?.[0] || null);
+                        e.currentTarget.value = "";
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => cordelFileInputRef.current?.click()}
+                      className="rounded-full border border-preto bg-[var(--parchment-dark)] px-3 py-1.5 font-heading text-xs font-semibold text-preto transition-all"
+                    >
+                      Enviar Arquivo
+                    </button>
+                  </div>
                 </div>
-                <div>
-                  <label className="font-heading text-xs font-semibold text-brown-mid uppercase tracking-widest block mb-2">
+                <textarea
+                  className="w-full min-h-[240px] resize-y rounded-[18px] border-2 border-preto bg-cream p-4 font-body text-sm leading-relaxed text-preto shadow-[inset_0_0_0_1px_rgba(15,12,8,0.08)]"
+                  value={existingCordelInput}
+                  onChange={(e) => setExistingCordelInput(e.target.value)}
+                  placeholder="Cole aqui o cordel completo (sextilhas)..."
+                />
+                <p className="mt-2 font-body text-xs text-brown-mid">
+                  Você pode colar o texto ou enviar um arquivo `.txt` ou `.md`.
+                </p>
+              </div>
+              <div>
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                  <label className="font-heading text-xs font-semibold text-brown-mid uppercase tracking-widest block">
                     Mapa de Significado Completo
                   </label>
-                  <textarea
-                    className="w-full min-h-[240px] resize-y rounded-[18px] border-2 border-preto bg-cream p-4 font-body text-sm leading-relaxed text-preto shadow-[inset_0_0_0_1px_rgba(15,12,8,0.08)]"
-                    value={meaningMapInput}
-                    onChange={(e) => setMeaningMapInput(e.target.value)}
-                    placeholder="Cole aqui o Mapa de Significado completo (Níveis 1, 2 e 3)..."
-                  />
+                  <div className="flex items-center gap-2">
+                    <input
+                      ref={meaningMapFileInputRef}
+                      type="file"
+                      accept=".txt,.md,.text"
+                      className="hidden"
+                      onChange={(e) => {
+                        void handleTextUpload("meaning-map", e.target.files?.[0] || null);
+                        e.currentTarget.value = "";
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => meaningMapFileInputRef.current?.click()}
+                      className="rounded-full border border-preto bg-[var(--parchment-dark)] px-3 py-1.5 font-heading text-xs font-semibold text-preto transition-all"
+                    >
+                      Enviar Arquivo
+                    </button>
+                  </div>
                 </div>
+                <textarea
+                  className="w-full min-h-[240px] resize-y rounded-[18px] border-2 border-preto bg-cream p-4 font-body text-sm leading-relaxed text-preto shadow-[inset_0_0_0_1px_rgba(15,12,8,0.08)]"
+                  value={meaningMapInput}
+                  onChange={(e) => setMeaningMapInput(e.target.value)}
+                  placeholder="Cole aqui o Mapa de Significado completo (Níveis 1, 2 e 3)..."
+                />
+                <p className="mt-2 font-body text-xs text-brown-mid">
+                  Você pode colar o texto ou enviar um arquivo `.txt` ou `.md`.
+                </p>
               </div>
-            )}
+            </div>
             {error && (
               <div className="mt-3 whitespace-pre-wrap rounded-[16px] border-2 border-preto bg-[var(--parchment-dark)] px-4 py-3 font-body text-[13px] text-preto">
                 {error}
@@ -1700,17 +2090,11 @@ export default function ForjaDeCordel() {
             )}
             <div className="mt-4">
               <button
-                onClick={
-                  inputMode === "compose" ? handleCompose : handleAnalyzeExisting
-                }
-                disabled={
-                  inputMode === "compose"
-                    ? !meaningMapInput.trim()
-                    : !existingCordelInput.trim() || !meaningMapInput.trim()
-                }
+                onClick={handleAnalyzeExisting}
+                disabled={!existingCordelInput.trim() || !meaningMapInput.trim()}
                 className="btn-primary cursor-pointer rounded-full border-2 border-preto bg-preto px-6 py-2.5 font-heading text-sm font-bold text-cream transition-all disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {inputMode === "compose" ? "Forjar Cordel" : "Analisar Cordel"}
+                Analisar Cordel
               </button>
             </div>
           </section>
@@ -1719,29 +2103,6 @@ export default function ForjaDeCordel() {
         {/* LOADING */}
         {isLoading && (
           <div className="rounded-[24px] border-[3px] border-preto bg-parchment px-6 py-12 text-center">
-            {phase === "composing" && (
-              <div className="text-left max-w-[350px] mx-auto mb-6 px-5">
-                <StepBadge
-                  done={elapsed > 15}
-                  active={elapsed <= 15}
-                  label="Planejador"
-                  sub="Nível 1 → estrutura"
-                />
-                <StepBadge
-                  done={elapsed > 30}
-                  active={elapsed > 15 && elapsed <= 30}
-                  label="Vocabulário"
-                  sub="Nível 2 → imagens"
-                />
-                <StepBadge
-                  done={false}
-                  active={elapsed > 30}
-                  label="Compositor"
-                  sub="Nível 3 → sextilhas"
-                />
-              </div>
-            )}
-
             <div className="inline-block w-6 h-6 border-[3px] border-parchment-dark border-t-telha rounded-full animate-spin-slow" />
             <p className="font-heading text-[15px] text-brown-mid mt-3 mb-1">
               {phaseLabels[phase] || "Processando"}…
@@ -1786,29 +2147,39 @@ export default function ForjaDeCordel() {
                 analysisData={analysisData}
                 analysisDirty={analysisDirty}
                 audioUrl={audioUrl}
+                userAudio={userAudio}
                 audioLoading={audioLoading}
+                userAudioRecording={userAudioRecording}
                 audioError={audioError}
+                userAudioError={userAudioError}
                 onVerseChange={handleCordelVerseChange}
                 onVerseCommit={handleCordelVerseCommit}
                 onListen={handleListen}
+                onRecord={handleRecord}
               />
             )}
             {activeTab === "metrica" && analysisData && (
               <MetricaView data={analysisData} />
             )}
             {activeTab === "fidelidade" && analysisData && (
-              <FidelidadeView data={analysisData} />
+              <FidelidadeView data={analysisData} cordelData={cordelData} />
             )}
             {activeTab === "relatorio" && (
               <ReportView
                 reportText={reportText}
+                cordelText={cordelText}
+                psalmNumber={currentPsalmNumber}
                 historyEntries={historyEntries}
                 analysisData={analysisData}
                 analysisDirty={analysisDirty}
                 audioUrl={audioUrl}
                 audioFileName={audioFileName}
+                userAudio={userAudio}
                 onCopyReport={handleCopyReport}
                 onDownloadReport={handleDownloadReport}
+                onDownloadCordel={handleDownloadCordel}
+                onDownloadElevenLabsAudio={handleDownloadElevenLabsAudio}
+                onDownloadUserAudio={handleDownloadUserAudio}
               />
             )}
 
@@ -1833,6 +2204,7 @@ export default function ForjaDeCordel() {
               <button
                 onClick={() => {
                   setPhase("input");
+                  setInputMode("analyze-existing");
                   setError("");
                   setAnalysisDirty(false);
                   setHistoryEntries([]);
@@ -1840,6 +2212,7 @@ export default function ForjaDeCordel() {
                   setAudioFileName(null);
                   setAudioPathname(null);
                   setAudioError("");
+                  clearUserAudio();
                   setActiveTab("cordel");
                 }}
                 className="btn-secondary cursor-pointer rounded-full border-2 border-preto bg-cream px-5 py-2.5 font-heading text-sm font-bold text-preto transition-all"
