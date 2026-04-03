@@ -283,7 +283,26 @@ async function downloadRemoteFile(url: string, fileName: string) {
 }
 
 async function readUploadedTextFile(file: File) {
-  const text = await file.text();
+  const lowerName = file.name.toLowerCase();
+
+  if (lowerName.endsWith(".doc")) {
+    throw new Error(
+      `O arquivo "${file.name}" está em formato Word antigo (.doc). Converta para .docx e tente novamente.`
+    );
+  }
+
+  let text = "";
+
+  if (lowerName.endsWith(".docx")) {
+    const arrayBuffer = await file.arrayBuffer();
+    const mammothModule = await import("mammoth");
+    const mammoth = "default" in mammothModule ? mammothModule.default : mammothModule;
+    const result = await mammoth.extractRawText({ arrayBuffer });
+    text = result.value;
+  } else {
+    text = await file.text();
+  }
+
   if (!text.trim()) {
     throw new Error(`O arquivo "${file.name}" está vazio.`);
   }
@@ -2022,7 +2041,7 @@ export default function ForjaDeCordel() {
                     <input
                       ref={cordelFileInputRef}
                       type="file"
-                      accept=".txt,.md,.text"
+                      accept=".txt,.md,.text,.docx,.doc"
                       className="hidden"
                       onChange={(e) => {
                         void handleTextUpload("cordel", e.target.files?.[0] || null);
@@ -2045,7 +2064,7 @@ export default function ForjaDeCordel() {
                   placeholder="Cole aqui o cordel completo (sextilhas)..."
                 />
                 <p className="mt-2 font-body text-xs text-brown-mid">
-                  Você pode colar o texto ou subir um arquivo `.txt` ou `.md`.
+                  Você pode colar o texto ou subir um arquivo `.txt`, `.md` ou `.docx`.
                 </p>
               </div>
               <div>
@@ -2057,7 +2076,7 @@ export default function ForjaDeCordel() {
                     <input
                       ref={meaningMapFileInputRef}
                       type="file"
-                      accept=".txt,.md,.text"
+                      accept=".txt,.md,.text,.docx,.doc"
                       className="hidden"
                       onChange={(e) => {
                         void handleTextUpload("meaning-map", e.target.files?.[0] || null);
@@ -2080,7 +2099,7 @@ export default function ForjaDeCordel() {
                   placeholder="Cole aqui o Mapa de Significado completo (Níveis 1, 2 e 3)..."
                 />
                 <p className="mt-2 font-body text-xs text-brown-mid">
-                  Você pode colar o texto ou subir um arquivo `.txt` ou `.md`.
+                  Você pode colar o texto ou subir um arquivo `.txt`, `.md` ou `.docx`.
                 </p>
               </div>
             </div>
