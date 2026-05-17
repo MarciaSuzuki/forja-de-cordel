@@ -151,6 +151,13 @@ export function AnamaPage() {
             onSelect={handleSelect}
           />
 
+          <p
+            className="mt-10 text-center text-2xl sm:text-3xl md:text-4xl font-semibold italic"
+            style={{ fontFamily: "Fraunces, Georgia, serif", color: INK, letterSpacing: "0.02em" }}
+          >
+            Celebrando a Oralidade
+          </p>
+
           <p className="mt-6 text-xs opacity-60 text-center">
             Suas gravações e anotações ficam salvas neste navegador. Use o mesmo dispositivo para retomar o trabalho.
           </p>
