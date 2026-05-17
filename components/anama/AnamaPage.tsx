@@ -4,6 +4,7 @@ import Image from "next/image";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { BuntingGallery } from "./BuntingGallery";
 import { StropheModal } from "./StropheModal";
+import { INK, PARCHMENT } from "./BuntingFlag";
 import { listRecordedEstrofes } from "@/lib/audioStore";
 import { listEstrofesWithNotes } from "@/lib/notesStore";
 
@@ -49,8 +50,8 @@ export function AnamaPage() {
     <div
       className="min-h-screen"
       style={{
-        background: "#F5E6D3",
-        color: "#2C1810",
+        background: PARCHMENT,
+        color: INK,
         fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif",
       }}
     >
@@ -68,22 +69,26 @@ export function AnamaPage() {
             sizes="100vw"
             priority
             className="object-cover"
+            style={{ filter: "sepia(0.55) saturate(0.45) contrast(1.05)" }}
           />
-          <div className="absolute inset-0 bg-gradient-to-b from-black/10 via-transparent to-[#F5E6D3]" />
+          <div
+            className="absolute inset-0"
+            style={{ background: `linear-gradient(to bottom, rgba(15,12,8,0.05), transparent 40%, ${PARCHMENT})` }}
+          />
         </div>
-        <div className="max-w-4xl mx-auto px-4 -mt-12 sm:-mt-16 relative z-10 text-center">
+        <div className="max-w-4xl mx-auto px-4 -mt-14 sm:-mt-20 relative z-10 text-center">
           <h1
-            className="text-3xl sm:text-5xl md:text-6xl font-bold drop-shadow-md"
-            style={{ fontFamily: "Fraunces, Georgia, serif", color: "#2C1810" }}
+            className="text-3xl sm:text-5xl md:text-6xl font-bold"
+            style={{ fontFamily: "Fraunces, Georgia, serif", color: INK, letterSpacing: "0.01em" }}
           >
             Os Quatro de Anamá
           </h1>
-          <p className="mt-2 text-base sm:text-lg" style={{ color: "#2C1810" }}>
+          <p className="mt-2 text-base sm:text-lg" style={{ color: INK }}>
             Cordel de <span className="font-semibold">Marcia Suzuki</span>
           </p>
           <p
-            className="mt-1 inline-block px-3 py-1 rounded-full text-xs sm:text-sm font-semibold tracking-wide uppercase"
-            style={{ background: "#2C1810", color: "#FCBF49" }}
+            className="mt-3 inline-block px-3 py-1 text-xs sm:text-sm font-semibold tracking-[0.18em] uppercase"
+            style={{ color: INK, border: `1.5px solid ${INK}`, background: "transparent" }}
           >
             Workshop Ready Vessels
           </p>
@@ -123,11 +128,17 @@ export function AnamaPage() {
             </h2>
             <div className="text-xs sm:text-sm flex items-center gap-3 opacity-80">
               <span className="flex items-center gap-1">
-                <span className="inline-block w-2.5 h-2.5 rounded-full bg-[#D62828] border border-white" />
+                <span
+                  className="inline-block w-2.5 h-2.5 rounded-full"
+                  style={{ background: INK, boxShadow: `0 0 0 1.5px ${PARCHMENT}` }}
+                />
                 gravação
               </span>
               <span className="flex items-center gap-1">
-                <span className="inline-block w-2.5 h-2.5 rounded-full bg-[#FCBF49] border border-white" />
+                <span
+                  className="inline-block w-2.5 h-2.5 rounded-full"
+                  style={{ background: PARCHMENT, boxShadow: `inset 0 0 0 1.5px ${INK}` }}
+                />
                 anotação
               </span>
             </div>

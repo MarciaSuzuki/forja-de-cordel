@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useAudioRecorder } from "@/lib/useAudioRecorder";
 import { deleteRecording, loadRecording, saveRecording } from "@/lib/audioStore";
 import { loadNote, saveNote } from "@/lib/notesStore";
-import { flagColor } from "./BuntingFlag";
+import { INK, PARCHMENT } from "./BuntingFlag";
 
 interface Props {
   estrofe: number;
@@ -32,7 +32,6 @@ export function StropheModal({ estrofe, onClose, onRecordingChange, onNoteChange
   const [savedFlash, setSavedFlash] = useState(false);
   const [longRecWarning, setLongRecWarning] = useState(false);
   const recorder = useAudioRecorder();
-  const color = flagColor(estrofe);
 
   useEffect(() => {
     setNotes(loadNote(estrofe));
@@ -139,18 +138,22 @@ export function StropheModal({ estrofe, onClose, onRecordingChange, onNoteChange
       onClick={onClose}
     >
       <div
-        className="relative w-full max-w-xl bg-white rounded-lg shadow-2xl border-2 overflow-hidden"
-        style={{ borderColor: color, fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif" }}
+        className="relative w-full max-w-xl rounded-sm shadow-2xl overflow-hidden"
+        style={{
+          background: PARCHMENT,
+          border: `2px solid ${INK}`,
+          fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif",
+        }}
         onClick={(e) => e.stopPropagation()}
       >
         <div
           className="flex items-center justify-between px-5 py-4 border-b"
-          style={{ background: color, color: "white" }}
+          style={{ background: INK, color: PARCHMENT, borderColor: INK }}
         >
           <h2
             id="strophe-modal-title"
             className="text-xl sm:text-2xl font-bold"
-            style={{ fontFamily: "Fraunces, Georgia, serif", textShadow: "1px 1px 0 rgba(0,0,0,0.25)" }}
+            style={{ fontFamily: "Fraunces, Georgia, serif" }}
           >
             Estrofe {estrofe}
           </h2>
@@ -158,13 +161,14 @@ export function StropheModal({ estrofe, onClose, onRecordingChange, onNoteChange
             type="button"
             onClick={onClose}
             aria-label="Fechar"
-            className="text-white text-2xl leading-none hover:opacity-70 focus:outline-none focus:ring-2 focus:ring-white rounded px-2"
+            className="text-2xl leading-none hover:opacity-70 focus:outline-none rounded px-2"
+            style={{ color: PARCHMENT }}
           >
             ×
           </button>
         </div>
 
-        <div className="p-5 space-y-5 max-h-[80vh] overflow-y-auto" style={{ background: "#F5E6D3", color: "#2C1810" }}>
+        <div className="p-5 space-y-5 max-h-[80vh] overflow-y-auto" style={{ background: PARCHMENT, color: INK }}>
           <section>
             <h3 className="text-sm font-semibold mb-2 uppercase tracking-wide opacity-70">Áudio da estrofe</h3>
             <audio ref={audioRef} controls preload="none" src={stropheAudioUrl} className="w-full">
@@ -179,37 +183,38 @@ export function StropheModal({ estrofe, onClose, onRecordingChange, onNoteChange
                 type="button"
                 onClick={handleStartRec}
                 disabled={isRecording || isRequesting}
-                className="inline-flex items-center gap-2 rounded-md px-4 py-2 font-semibold text-white shadow-sm transition disabled:opacity-50 disabled:cursor-not-allowed"
-                style={{ background: "#D62828" }}
+                className="inline-flex items-center gap-2 rounded-sm px-4 py-2 font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed"
+                style={{ background: INK, color: PARCHMENT }}
               >
-                <span aria-hidden className="block w-2.5 h-2.5 rounded-full bg-white" />
+                <span aria-hidden className="block w-2.5 h-2.5 rounded-full border" style={{ borderColor: PARCHMENT }} />
                 {isRequesting ? "Permitindo..." : isRecording ? "Gravando..." : hadExistingRecording ? "Regravar" : "Gravar"}
               </button>
               <button
                 type="button"
                 onClick={handleStopRec}
                 disabled={!isRecording}
-                className="inline-flex items-center gap-2 rounded-md px-4 py-2 font-semibold text-white shadow-sm transition disabled:opacity-50 disabled:cursor-not-allowed"
-                style={{ background: "#2C1810" }}
+                className="inline-flex items-center gap-2 rounded-sm px-4 py-2 font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed"
+                style={{ background: "transparent", color: INK, border: `1.5px solid ${INK}` }}
               >
-                <span aria-hidden className="block w-2.5 h-2.5 bg-white" />
+                <span aria-hidden className="block w-2.5 h-2.5" style={{ background: INK }} />
                 Parar
               </button>
               <button
                 type="button"
                 onClick={handlePlayRecording}
                 disabled={!recordingUrl || isRecording}
-                className="inline-flex items-center gap-2 rounded-md px-4 py-2 font-semibold text-white shadow-sm transition disabled:opacity-50 disabled:cursor-not-allowed"
-                style={{ background: "#06A77D" }}
+                className="inline-flex items-center gap-2 rounded-sm px-4 py-2 font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed"
+                style={{ background: "transparent", color: INK, border: `1.5px solid ${INK}` }}
               >
-                ▶ Reproduzir
+                <span aria-hidden style={{ borderLeft: `7px solid ${INK}`, borderTop: "5px solid transparent", borderBottom: "5px solid transparent" }} />
+                Reproduzir
               </button>
               {recordingUrl && !isRecording && (
                 <button
                   type="button"
                   onClick={handleDeleteRecording}
-                  className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium border transition hover:bg-black/5"
-                  style={{ borderColor: "#8B7355", color: "#2C1810" }}
+                  className="inline-flex items-center gap-2 rounded-sm px-3 py-2 text-sm font-medium border transition hover:bg-black/5"
+                  style={{ borderColor: INK, color: INK }}
                 >
                   Apagar
                 </button>
@@ -224,11 +229,11 @@ export function StropheModal({ estrofe, onClose, onRecordingChange, onNoteChange
               )}
               {!isRecording && recordingUrl && <>✓ Gravação pronta para ouvir.</>}
               {!isRecording && !recordingUrl && recorder.state === "idle" && <>Pronto para gravar.</>}
-              {recorder.state === "error" && <span className="text-[#D62828]">Erro: {recorder.error}</span>}
+              {recorder.state === "error" && <span style={{ color: INK }}>Erro: {recorder.error}</span>}
             </p>
 
             {longRecWarning && (
-              <p className="mt-1 text-sm font-medium text-[#D62828]">
+              <p className="mt-1 text-sm font-medium" style={{ color: INK }}>
                 A gravação já passou de 5 minutos. Considere parar.
               </p>
             )}
@@ -262,19 +267,19 @@ export function StropheModal({ estrofe, onClose, onRecordingChange, onNoteChange
               onChange={handleNotesChange}
               placeholder="Escreva suas observações sobre esta estrofe..."
               rows={5}
-              className="w-full rounded-md border bg-white p-3 text-sm leading-relaxed focus:outline-none focus:ring-2 transition"
-              style={{ borderColor: "#8B7355" }}
+              className="w-full rounded-sm p-3 text-sm leading-relaxed focus:outline-none transition"
+              style={{ borderColor: INK, border: `1.5px solid ${INK}`, background: "#f7edcf", color: INK }}
             />
             <div className="mt-2 flex items-center gap-3">
               <button
                 type="button"
                 onClick={handleSaveNotes}
-                className="inline-flex items-center gap-2 rounded-md px-4 py-2 font-semibold text-white shadow-sm transition"
-                style={{ background: "#F77F00" }}
+                className="inline-flex items-center gap-2 rounded-sm px-4 py-2 font-semibold transition"
+                style={{ background: INK, color: PARCHMENT }}
               >
                 Salvar anotações
               </button>
-              {savedFlash && <span className="text-sm font-medium text-[#06A77D]">Salvo ✓</span>}
+              {savedFlash && <span className="text-sm font-medium" style={{ color: INK }}>Salvo ✓</span>}
             </div>
             <p className="mt-1 text-xs opacity-60">As anotações são salvas automaticamente conforme você digita.</p>
           </section>
@@ -283,8 +288,8 @@ export function StropheModal({ estrofe, onClose, onRecordingChange, onNoteChange
             <button
               type="button"
               onClick={onClose}
-              className="rounded-md px-4 py-2 font-semibold border transition hover:bg-black/5"
-              style={{ borderColor: "#2C1810", color: "#2C1810" }}
+              className="rounded-sm px-4 py-2 font-semibold border transition hover:bg-black/5"
+              style={{ borderColor: INK, color: INK }}
             >
               Fechar
             </button>

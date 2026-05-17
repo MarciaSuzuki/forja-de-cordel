@@ -1,6 +1,6 @@
 "use client";
 
-import { BuntingFlag } from "./BuntingFlag";
+import { BuntingFlag, INK } from "./BuntingFlag";
 
 interface Props {
   total: number;
@@ -20,7 +20,7 @@ export function BuntingGallery({ total, recordedSet, noteSet, onSelect }: Props)
     <div className="flex flex-col gap-6 sm:gap-8 md:gap-10">
       {rows.map((row, idx) => (
         <div key={idx} className="relative">
-          <div className="absolute left-0 right-0 top-0 h-px bg-[#8B7355]" aria-hidden />
+          <div className="absolute left-0 right-0 top-0 h-px" style={{ background: INK }} aria-hidden />
           <div className="flex justify-between gap-1 sm:gap-2 px-1 pt-px">
             {row.map((n) => (
               <BuntingFlag
