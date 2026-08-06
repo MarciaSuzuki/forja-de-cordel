@@ -2,11 +2,14 @@ import { neon } from "@neondatabase/serverless";
 
 interface StoredPsalmRecordInput {
   salmo: number;
-  modo: "compose" | "analyze-existing";
+  modo: "compose";
   status: string;
   salvoEm?: string;
   analysisDirty: boolean;
   meaningMapText: string;
+  simplifiedMeaningMapText?: string;
+  compositionPlan?: unknown | null;
+  workflowModels?: Record<string, string>;
   cordelData: unknown;
   analysisData: unknown | null;
   historyEntries: unknown[];
@@ -90,11 +93,17 @@ function mapCatalogRow(row: Record<string, unknown>): PsalmCatalogItem {
 function mapRecordRow(row: Record<string, unknown>): StoredPsalmRecord {
   return {
     salmo: Number(row.salmo),
-    modo: row.modo === "analyze-existing" ? "analyze-existing" : "compose",
+    modo: "compose",
     status: sanitizeText(row.status) || "rascunho",
     salvoEm: normalizeTimestamp(row.salvoEm),
     analysisDirty: Boolean(row.analysisDirty),
     meaningMapText: sanitizeText(row.meaningMapText),
+    simplifiedMeaningMapText: sanitizeText(row.simplifiedMeaningMapText),
+    compositionPlan: row.compositionPlan ?? null,
+    workflowModels:
+      row.workflowModels && typeof row.workflowModels === "object"
+        ? (row.workflowModels as Record<string, string>)
+        : {},
     cordelData: row.cordelData || { estrofes: [] },
     analysisData: row.analysisData ?? null,
     historyEntries: Array.isArray(row.historyEntries) ? row.historyEntries : [],
@@ -112,11 +121,17 @@ function normalizeRecord(
 ): StoredPsalmRecord {
   return {
     salmo: psalmNumber,
-    modo: record.modo === "analyze-existing" ? "analyze-existing" : "compose",
+    modo: "compose",
     status: sanitizeText(record.status) || "rascunho",
     salvoEm: normalizeTimestamp(record.salvoEm),
     analysisDirty: Boolean(record.analysisDirty),
     meaningMapText: sanitizeText(record.meaningMapText),
+    simplifiedMeaningMapText: sanitizeText(record.simplifiedMeaningMapText),
+    compositionPlan: record.compositionPlan ?? null,
+    workflowModels:
+      record.workflowModels && typeof record.workflowModels === "object"
+        ? record.workflowModels
+        : {},
     cordelData: record.cordelData || { estrofes: [] },
     analysisData: record.analysisData ?? null,
     historyEntries: Array.isArray(record.historyEntries) ? record.historyEntries : [],
@@ -155,6 +170,9 @@ export async function ensurePsalmSchema() {
           status TEXT NOT NULL DEFAULT 'rascunho',
           analysis_dirty BOOLEAN NOT NULL DEFAULT FALSE,
           meaning_map_text TEXT NOT NULL DEFAULT '',
+          simplified_meaning_map_text TEXT NOT NULL DEFAULT '',
+          composition_plan JSONB,
+          workflow_models JSONB NOT NULL DEFAULT '{}'::jsonb,
           cordel_data JSONB NOT NULL,
           analysis_data JSONB,
           history_entries JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -175,6 +193,9 @@ export async function ensurePsalmSchema() {
           status TEXT NOT NULL DEFAULT 'rascunho',
           analysis_dirty BOOLEAN NOT NULL DEFAULT FALSE,
           meaning_map_text TEXT NOT NULL DEFAULT '',
+          simplified_meaning_map_text TEXT NOT NULL DEFAULT '',
+          composition_plan JSONB,
+          workflow_models JSONB NOT NULL DEFAULT '{}'::jsonb,
           cordel_data JSONB NOT NULL,
           analysis_data JSONB,
           history_entries JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -185,6 +206,30 @@ export async function ensurePsalmSchema() {
           report_text TEXT NOT NULL DEFAULT '',
           saved_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
+      `,
+      sql`
+        ALTER TABLE psalm_entries
+        ADD COLUMN IF NOT EXISTS simplified_meaning_map_text TEXT NOT NULL DEFAULT ''
+      `,
+      sql`
+        ALTER TABLE psalm_versions
+        ADD COLUMN IF NOT EXISTS simplified_meaning_map_text TEXT NOT NULL DEFAULT ''
+      `,
+      sql`
+        ALTER TABLE psalm_entries
+        ADD COLUMN IF NOT EXISTS composition_plan JSONB
+      `,
+      sql`
+        ALTER TABLE psalm_entries
+        ADD COLUMN IF NOT EXISTS workflow_models JSONB NOT NULL DEFAULT '{}'::jsonb
+      `,
+      sql`
+        ALTER TABLE psalm_versions
+        ADD COLUMN IF NOT EXISTS composition_plan JSONB
+      `,
+      sql`
+        ALTER TABLE psalm_versions
+        ADD COLUMN IF NOT EXISTS workflow_models JSONB NOT NULL DEFAULT '{}'::jsonb
       `,
       sql`
         CREATE INDEX IF NOT EXISTS psalm_versions_psalm_number_saved_at_idx
@@ -226,6 +271,9 @@ export async function getPsalmRecord(psalmNumber: number) {
       saved_at AS "salvoEm",
       analysis_dirty AS "analysisDirty",
       meaning_map_text AS "meaningMapText",
+      simplified_meaning_map_text AS "simplifiedMeaningMapText",
+      composition_plan AS "compositionPlan",
+      workflow_models AS "workflowModels",
       cordel_data AS "cordelData",
       analysis_data AS "analysisData",
       history_entries AS "historyEntries",
@@ -264,6 +312,9 @@ export async function savePsalmRecord(
         status,
         analysis_dirty,
         meaning_map_text,
+        simplified_meaning_map_text,
+        composition_plan,
+        workflow_models,
         cordel_data,
         analysis_data,
         history_entries,
@@ -281,6 +332,9 @@ export async function savePsalmRecord(
         ${normalized.status},
         ${normalized.analysisDirty},
         ${normalized.meaningMapText},
+        ${normalized.simplifiedMeaningMapText},
+        ${JSON.stringify(normalized.compositionPlan)}::jsonb,
+        ${JSON.stringify(normalized.workflowModels)}::jsonb,
         ${JSON.stringify(normalized.cordelData)}::jsonb,
         ${analysisJson}::jsonb,
         ${JSON.stringify(normalized.historyEntries)}::jsonb,
@@ -298,6 +352,9 @@ export async function savePsalmRecord(
         status = EXCLUDED.status,
         analysis_dirty = EXCLUDED.analysis_dirty,
         meaning_map_text = EXCLUDED.meaning_map_text,
+        simplified_meaning_map_text = EXCLUDED.simplified_meaning_map_text,
+        composition_plan = EXCLUDED.composition_plan,
+        workflow_models = EXCLUDED.workflow_models,
         cordel_data = EXCLUDED.cordel_data,
         analysis_data = EXCLUDED.analysis_data,
         history_entries = EXCLUDED.history_entries,
@@ -316,6 +373,9 @@ export async function savePsalmRecord(
         status,
         analysis_dirty,
         meaning_map_text,
+        simplified_meaning_map_text,
+        composition_plan,
+        workflow_models,
         cordel_data,
         analysis_data,
         history_entries,
@@ -332,6 +392,9 @@ export async function savePsalmRecord(
         ${normalized.status},
         ${normalized.analysisDirty},
         ${normalized.meaningMapText},
+        ${normalized.simplifiedMeaningMapText},
+        ${JSON.stringify(normalized.compositionPlan)}::jsonb,
+        ${JSON.stringify(normalized.workflowModels)}::jsonb,
         ${JSON.stringify(normalized.cordelData)}::jsonb,
         ${analysisJson}::jsonb,
         ${JSON.stringify(normalized.historyEntries)}::jsonb,

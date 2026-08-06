@@ -17,7 +17,48 @@ interface Estrofe {
 }
 
 interface CordelData {
+  titulo?: string;
   estrofes: Estrofe[];
+}
+
+interface CompositionPlan {
+  salmo: number;
+  titulo_provisorio: string;
+  sintese: string;
+  estrutura: {
+    total_estrofes: number;
+    justificativa: string;
+    arco_emocional: string;
+    registro_temporal: string;
+    contrastes: string[];
+    assimetrias: string[];
+  };
+  guia_de_linguagem: {
+    participantes: string[];
+    lugares: string[];
+    objetos: string[];
+    imagens: string[];
+    expressoes: string[];
+    evitar: string[];
+  };
+  cobertura: Array<{
+    proposicao: number;
+    cena: number;
+    resumo: string;
+    versos_minimos: number;
+    estrofes_planejadas: number[];
+  }>;
+  estrofes: Array<{
+    numero: number;
+    funcao: string;
+    tom: string;
+    proposicoes: number[];
+    imagens: string[];
+    palavras_chave: string[];
+    restricoes: string[];
+    rima_sugerida: string;
+    roteiro_de_versos: string[];
+  }>;
 }
 
 interface VersoAnalysis {
@@ -32,19 +73,47 @@ interface EstrofeAnalysis {
   versos: VersoAnalysis[];
   rima_palavras: string[];
   rima_ok: boolean;
+  oralidade_ok?: boolean;
+  nota_poetica?: string;
 }
 
 interface FidelidadeItem {
   proposicao: number;
   status: "PRESENTE" | "PARCIAL" | "AUSENTE";
   estrofe?: number;
+  resumo?: string;
+  evidencia?: string;
   nota?: string;
 }
 
 interface Adicao {
   texto: string;
   estrofe: number;
+  verso?: number;
   avaliacao: string;
+}
+
+interface AnalysisSummary {
+  aprovado: boolean;
+  parecer: string;
+  versos_corretos: number;
+  versos_totais: number;
+  estrofes_com_rima: number;
+  estrofes_totais: number;
+  proposicoes_presentes: number;
+  proposicoes_totais: number;
+  oralidade_ok: boolean;
+  qualidade_poetica_ok: boolean;
+}
+
+interface AnalysisProblem {
+  tipo: "METRICA" | "RIMA" | "FIDELIDADE" | "ADICAO" | "ORALIDADE" | "QUALIDADE";
+  prioridade: "ALTA" | "MEDIA" | "BAIXA";
+  estrofe: number;
+  verso: number;
+  trecho: string;
+  descricao: string;
+  instrucao_de_correcao: string;
 }
 
 interface RecordedAudio {
@@ -53,16 +122,39 @@ interface RecordedAudio {
   mimeType: string;
 }
 
+interface LocalSuggestionAlternative {
+  versos: string[];
+  justificativa: string;
+  observacao_metrica: string;
+  observacao_fidelidade: string;
+}
+
+interface StanzaSuggestions {
+  verseIndexes: number[];
+  alternatives: LocalSuggestionAlternative[];
+  model: string;
+}
+
+type StanzaUndoHistory = Record<number, string[][]>;
+type VerseSelections = Record<number, number[]>;
+type StanzaSuggestionResults = Record<number, StanzaSuggestions>;
+type StanzaTextState = Record<number, string>;
+type StanzaOpenState = Record<number, boolean>;
+
 const UNSPECIFIED_ADDITION_TEXT = "Trecho não especificado pela análise.";
 
 interface AnalysisData {
+  resumo?: AnalysisSummary;
   estrofes: EstrofeAnalysis[];
   fidelidade: FidelidadeItem[];
   adicoes: Adicao[];
+  problemas: AnalysisProblem[];
 }
 
 type HistoryEntryType =
   | "origem"
+  | "planejamento"
+  | "composicao"
   | "analise"
   | "revisao"
   | "edicao"
@@ -84,6 +176,9 @@ interface SavedPsalmRecord {
   salvoEm: string;
   analysisDirty: boolean;
   meaningMapText: string;
+  simplifiedMeaningMapText?: string;
+  compositionPlan?: CompositionPlan | null;
+  workflowModels?: Record<string, string>;
   cordelData: CordelData;
   analysisData: AnalysisData | null;
   historyEntries: HistoryEntry[];
@@ -102,15 +197,16 @@ interface PsalmCatalogItem {
   revisionCount: number;
 }
 
-type InputMode = "compose" | "analyze-existing";
+type InputMode = "compose";
 
 type Phase =
   | "input"
+  | "simplifying"
+  | "planning"
   | "composing"
-  | "composed"
   | "analyzing"
-  | "analyzed"
   | "revising"
+  | "completed"
   | "error";
 
 // ── Timer hook ──
@@ -182,6 +278,7 @@ function normalizeAddition(raw: any): Adicao {
     const trecho = extractQuotedFragment(raw) || raw.replace(/estrofe\s*\d+\s*:?\s*/i, "").trim();
     return {
       estrofe: estrofeMatch ? Number(estrofeMatch[1]) : 0,
+      verso: 0,
       texto: trecho || UNSPECIFIED_ADDITION_TEXT,
       avaliacao: raw,
     };
@@ -212,6 +309,7 @@ function normalizeAddition(raw: any): Adicao {
 
   return {
     estrofe,
+    verso: Number.isFinite(Number(raw?.verso)) ? Number(raw.verso) : 0,
     texto: texto || UNSPECIFIED_ADDITION_TEXT,
     avaliacao,
   };
@@ -219,9 +317,11 @@ function normalizeAddition(raw: any): Adicao {
 
 function normalizeAnalysisData(raw: any): AnalysisData {
   return {
+    resumo: raw?.resumo,
     estrofes: Array.isArray(raw?.estrofes) ? raw.estrofes : [],
     fidelidade: Array.isArray(raw?.fidelidade) ? raw.fidelidade : [],
     adicoes: Array.isArray(raw?.adicoes) ? raw.adicoes.map(normalizeAddition) : [],
+    problemas: Array.isArray(raw?.problemas) ? raw.problemas : [],
   };
 }
 
@@ -230,13 +330,20 @@ function buildCordelFileName(psalmNumber: number | null) {
   return `${prefix}-aprovado.txt`;
 }
 
-function formatAdditionLocation(estrofe: number) {
-  return estrofe > 0 ? `Estrofe ${estrofe}` : "Trecho sem estrofe identificada";
+function formatAdditionLocation(estrofe: number, verso?: number) {
+  if (estrofe <= 0) return "Trecho sem estrofe identificada";
+  return `Estrofe ${estrofe}${verso && verso > 0 ? `, verso ${verso}` : ""}`;
 }
 
 function buildReportFileName(psalmNumber: number | null) {
   const prefix = psalmNumber ? `salmo-${String(psalmNumber).padStart(3, "0")}` : "relatorio-cordel";
   return `${prefix}-relatorio-final.md`;
+}
+
+function buildMeaningMapFileName(psalmNumber: number | null) {
+  return psalmNumber
+    ? `salmo-${String(psalmNumber).padStart(3, "0")}-mapa-de-significado.md`
+    : "mapa-de-significado.md";
 }
 
 function findEstrofeText(cordelData: CordelData | null, estrofeNumero: number) {
@@ -285,6 +392,10 @@ async function downloadRemoteFile(url: string, fileName: string) {
 async function readUploadedTextFile(file: File) {
   const lowerName = file.name.toLowerCase();
 
+  if (file.size > 5 * 1024 * 1024) {
+    throw new Error(`O arquivo "${file.name}" ultrapassa o limite de 5 MB.`);
+  }
+
   if (lowerName.endsWith(".doc")) {
     throw new Error(
       `O arquivo "${file.name}" está em formato Word antigo (.doc). Converta para .docx e tente novamente.`
@@ -310,7 +421,8 @@ async function readUploadedTextFile(file: File) {
 }
 
 function cordelToPlainText(data: CordelData) {
-  return data.estrofes.map((e) => e.versos.join("\n")).join("\n\n");
+  const verses = data.estrofes.map((e) => e.versos.join("\n")).join("\n\n");
+  return data.titulo?.trim() ? `${data.titulo.trim()}\n\n${verses}` : verses;
 }
 
 function summarizeAnalysis(data: AnalysisData | null) {
@@ -406,13 +518,15 @@ function describeCordelChanges(previous: CordelData, next: CordelData) {
 
 function hasAnalysisIssues(data: AnalysisData | null) {
   if (!data) return false;
+  if (data.resumo && !data.resumo.aprovado) return true;
 
   return Boolean(
     data.estrofes?.some(
       (estrofe) => estrofe.versos?.some((verso) => !verso.correto) || !estrofe.rima_ok
     ) ||
     data.adicoes?.length > 0 ||
-    data.fidelidade?.some((item) => item.status !== "PRESENTE")
+    data.fidelidade?.some((item) => item.status !== "PRESENTE") ||
+    data.problemas?.length > 0
   );
 }
 
@@ -438,8 +552,10 @@ function upsertCatalogItem(
 }
 
 function buildReportText({
-  inputMode,
   meaningMapText,
+  simplifiedMeaningMapText,
+  compositionPlan,
+  workflowModels,
   cordelData,
   analysisData,
   analysisDirty,
@@ -449,8 +565,10 @@ function buildReportText({
   audioUrl,
   userAudio,
 }: {
-  inputMode: InputMode;
   meaningMapText: string;
+  simplifiedMeaningMapText: string;
+  compositionPlan: CompositionPlan | null;
+  workflowModels: Record<string, string>;
   cordelData: CordelData | null;
   analysisData: AnalysisData | null;
   analysisDirty: boolean;
@@ -474,7 +592,7 @@ function buildReportText({
     ? analysisData.adicoes
         .map(
           (item) =>
-            `- ${formatAdditionLocation(item.estrofe)}: "${formatAdditionText(
+            `- ${formatAdditionLocation(item.estrofe, item.verso)}: "${formatAdditionText(
               item,
               cordelData
             )}"\n  Motivo: ${item.avaliacao}`
@@ -487,7 +605,9 @@ function buildReportText({
         .map((item) => {
           const estrofe = item.estrofe ? ` | Estrofe ${item.estrofe}` : "";
           const nota = item.nota ? ` | Nota: ${item.nota}` : "";
-          return `- Proposição ${item.proposicao}: ${item.status}${estrofe}${nota}`;
+          const resumo = item.resumo ? ` | ${item.resumo}` : "";
+          const evidencia = item.evidencia ? `\n  Evidência: "${item.evidencia}"` : "";
+          return `- Proposição ${item.proposicao}: ${item.status}${estrofe}${resumo}${nota}${evidencia}`;
         })
         .join("\n")
     : "- Análise de fidelidade ainda não executada.";
@@ -504,17 +624,38 @@ function buildReportText({
         .join("\n")
     : "1. Nenhuma mudança registrada nesta sessão.";
 
+  const modelsBlock = Object.keys(workflowModels).length
+    ? Object.entries(workflowModels)
+        .map(([role, model]) => `- ${role.replace(/_/g, " ")}: ${model}`)
+        .join("\n")
+    : "- Modelos ainda não registrados.";
+
+  const planBlock = compositionPlan
+    ? [
+        `- Título provisório: ${compositionPlan.titulo_provisorio}`,
+        `- Síntese: ${compositionPlan.sintese}`,
+        `- Estrofes planejadas: ${compositionPlan.estrutura.total_estrofes}`,
+        `- Justificativa: ${compositionPlan.estrutura.justificativa}`,
+        `- Arco emocional: ${compositionPlan.estrutura.arco_emocional}`,
+        `- Registro temporal: ${compositionPlan.estrutura.registro_temporal}`,
+        "",
+        "### Cobertura Planejada",
+        ...compositionPlan.cobertura.map(
+          (item) =>
+            `- Proposição ${item.proposicao}: ${item.resumo} → estrofe(s) ${item.estrofes_planejadas.join(
+              ", "
+            )}`
+        ),
+      ].join("\n")
+    : "Projeto de composição não disponível para este registro.";
+
   return [
     "# Relatório de Análise do Cordel",
     "",
     `- Última atualização: ${lastEvent}`,
-    `- Modo de entrada: ${
-      inputMode === "analyze-existing"
-        ? "Analisar Cordel"
-        : "Analisar Cordel"
-    }`,
+    "- Fluxo: preparação determinística do Mapa, composição automática, auditoria independente contra o Mapa original e lapidação humana; revisão por IA opcional.",
     `- Estado da análise: ${analysisStatus}`,
-    `- Revisões automáticas realizadas: ${revisionCount}`,
+    `- Revisões opcionais por IA realizadas: ${revisionCount}`,
     `- Áudio: ${
       audioUrl
         ? `Disponível${audioFileName ? ` (${audioFileName})` : ""}.`
@@ -536,11 +677,24 @@ function buildReportText({
     `- Proposições PRESENTE: ${summary.presentes}`,
     `- Proposições PARCIAL: ${summary.parciais}`,
     `- Proposições AUSENTE: ${summary.ausentes}`,
-    `- Adições semânticas detectadas: ${summary.additions}`,
+    `- Adições detectadas: ${summary.additions}`,
+    analysisData?.resumo ? `- Parecer final: ${analysisData.resumo.parecer}` : null,
     "",
-    "## Mapa de Significado",
+    "## Modelos Utilizados",
     "",
-    meaningMapText.trim() || "Mapa de Significado não informado.",
+    modelsBlock,
+    "",
+    "## Projeto de Composição",
+    "",
+    planBlock,
+    "",
+    "## Mapa Reduzido — Recorte Literal Usado na Composição",
+    "",
+    simplifiedMeaningMapText.trim() || "Recorte literal do Mapa não disponível.",
+    "",
+    "## Mapa Original do Portal — Fonte da Auditoria",
+    "",
+    meaningMapText.trim() || "Mapa de Significado original não informado.",
     "",
     "## Cordel Final",
     "",
@@ -550,7 +704,9 @@ function buildReportText({
     "",
     fidelityBlock,
     "",
-    "## Adições Semânticas Detectadas",
+    "## Adições Detectadas",
+    "",
+    "Repetições, reformulações e outros recursos de oralidade podem ser legítimos. Verifique se estas adições estilísticas não introduzem elementos semânticos ausentes do Mapa de Significado.",
     "",
     additionsBlock,
     "",
@@ -579,39 +735,6 @@ async function apiGet(url: string) {
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || `Erro da API ${res.status}`);
   return data;
-}
-
-function extractPropositionsText(text: string) {
-  const level3Match = text.match(/##\s*Level\s*3[\s\S]*/i);
-  return (level3Match ? level3Match[0] : text).trim();
-}
-
-function parseExistingCordelText(text: string): CordelData {
-  const normalized = text.replace(/\r\n/g, "\n").trim();
-
-  if (!normalized) {
-    throw new Error("Cole o cordel completo para continuar.");
-  }
-
-  const estrofes = normalized
-    .split(/\n\s*\n/)
-    .map((estrofe) =>
-      estrofe
-        .split("\n")
-        .map((verso) => verso.trim())
-        .filter(Boolean)
-    )
-    .filter((versos) => versos.length > 0)
-    .map((versos, index) => ({
-      numero: index + 1,
-      versos,
-    }));
-
-  if (!estrofes.length) {
-    throw new Error("Não foi possível identificar estrofes no cordel colado.");
-  }
-
-  return { estrofes };
 }
 
 // ── Shema Logo ──
@@ -682,28 +805,72 @@ function StepBadge({
 }
 
 function PipelineBadges({
+  revisionCount,
+}: {
+  revisionCount: number;
+}) {
+  const done =
+    "font-mono text-[11px] text-cream bg-preto px-2 py-0.5 rounded-full border border-preto";
+  const rev =
+    "font-mono text-[11px] text-preto bg-[var(--amber-light)] px-2 py-0.5 rounded-full border border-preto/30";
+
+  return (
+    <div className="flex flex-wrap gap-2 items-center mb-5">
+      <span className={done}>✓ Mapa original</span>
+      <span className={done}>✓ Mapa preparado</span>
+      <span className={done}>✓ Projeto</span>
+      <span className={done}>✓ Composição</span>
+      <span className={done}>✓ Auditoria</span>
+      {revisionCount > 0 && (
+        <span className={rev}>Revisões opcionais por IA: {revisionCount}</span>
+      )}
+    </div>
+  );
+}
+
+function PipelineProgress({
   phase,
   revisionCount,
 }: {
   phase: Phase;
   revisionCount: number;
 }) {
-  const done =
-    "font-mono text-[11px] text-cream bg-preto px-2 py-0.5 rounded-full border border-preto";
-  const pending =
-    "font-mono text-[11px] text-preto bg-parchment-dark px-2 py-0.5 rounded-full border border-preto/30";
-  const rev =
-    "font-mono text-[11px] text-preto bg-[var(--amber-light)] px-2 py-0.5 rounded-full border border-preto/30";
+  const isOptionalRevision = phase === "revising" || revisionCount > 0;
+  const steps = [
+    {
+      phase: "simplifying" as Phase,
+      label: "Preparação do Mapa",
+      sub: "filtragem extrativa",
+    },
+    { phase: "planning" as Phase, label: "Projeto", sub: "estrutura e cobertura" },
+    { phase: "composing" as Phase, label: "Composição", sub: "sextilhas e imagens" },
+    ...(isOptionalRevision
+      ? [
+          {
+            phase: "revising" as Phase,
+            label: "Revisão por IA",
+            sub: `tentativa ${phase === "revising" ? revisionCount + 1 : revisionCount}`,
+          },
+        ]
+      : []),
+    { phase: "analyzing" as Phase, label: "Auditoria", sub: "métrica, rima e fidelidade" },
+  ];
+  const currentIndex = steps.findIndex((step) => step.phase === phase);
 
   return (
-    <div className="flex flex-wrap gap-2 items-center mb-5">
-      <span className={done}>✓ Cordel</span>
-      <span className={phase === "analyzed" ? done : pending}>
-        {phase === "analyzed" ? "✓" : "○"} Análise
-      </span>
-      {revisionCount > 0 && (
-        <span className={rev}>Revisão {revisionCount}/3</span>
-      )}
+    <div className="mx-auto mt-6 max-w-md text-left">
+      {steps.map((step) => {
+        const stepIndex = steps.findIndex((item) => item.phase === step.phase);
+        return (
+          <StepBadge
+            key={step.label}
+            label={step.label}
+            sub={step.sub}
+            active={phase === step.phase}
+            done={currentIndex > stepIndex}
+          />
+        );
+      })}
     </div>
   );
 }
@@ -712,8 +879,13 @@ function PipelineBadges({
 
 function CordelView({
   data,
-  analysisData,
-  analysisDirty,
+  stanzaUndoHistory,
+  verseSelections,
+  suggestionResults,
+  suggestionNotes,
+  suggestionErrors,
+  openSuggestionPanels,
+  suggestionLoadingStanza,
   audioUrl,
   userAudio,
   audioLoading,
@@ -722,12 +894,25 @@ function CordelView({
   userAudioError,
   onVerseChange,
   onVerseCommit,
+  onUndoStanza,
+  onToggleSuggestionPanel,
+  onToggleVerseSelection,
+  onSuggestionNoteChange,
+  onRequestSuggestions,
+  onAcceptSuggestion,
+  onRejectSuggestion,
+  onDismissSuggestions,
   onListen,
   onRecord,
 }: {
   data: CordelData;
-  analysisData: AnalysisData | null;
-  analysisDirty: boolean;
+  stanzaUndoHistory: StanzaUndoHistory;
+  verseSelections: VerseSelections;
+  suggestionResults: StanzaSuggestionResults;
+  suggestionNotes: StanzaTextState;
+  suggestionErrors: StanzaTextState;
+  openSuggestionPanels: StanzaOpenState;
+  suggestionLoadingStanza: number | null;
   audioUrl: string | null;
   userAudio: RecordedAudio | null;
   audioLoading: boolean;
@@ -741,72 +926,257 @@ function CordelView({
     previousValue: string,
     nextValue: string
   ) => void;
+  onUndoStanza: (estrofeNumero: number) => void;
+  onToggleSuggestionPanel: (estrofeNumero: number) => void;
+  onToggleVerseSelection: (estrofeNumero: number, versoIndex: number) => void;
+  onSuggestionNoteChange: (estrofeNumero: number, value: string) => void;
+  onRequestSuggestions: (estrofeNumero: number) => void;
+  onAcceptSuggestion: (estrofeNumero: number, suggestionIndex: number) => void;
+  onRejectSuggestion: (estrofeNumero: number, suggestionIndex: number) => void;
+  onDismissSuggestions: (estrofeNumero: number) => void;
   onListen: () => void;
   onRecord: () => void;
 }) {
   return (
     <div>
-      {analysisData?.adicoes?.length ? (
-        <div className="mb-4 rounded-[20px] border-2 border-preto bg-[var(--parchment-dark)] p-5 shadow-[inset_0_0_0_1px_rgba(15,12,8,0.08)]">
-          <div className="font-heading text-xs font-bold text-brown-light uppercase tracking-widest mb-2.5">
-            Adições Semânticas a Ajustar
+      {data.titulo && (
+        <div className="mb-5 text-center">
+          <div className="font-heading text-2xl font-bold uppercase tracking-[0.06em] text-preto">
+            {data.titulo}
           </div>
-          {analysisData.adicoes.map((a, i) => (
-            <div key={`${a.estrofe}-${i}`} className="py-1.5 border-b border-preto/10 last:border-b-0">
-              <div className="font-body text-sm text-preto">
-                Adição detectada em {formatAdditionLocation(a.estrofe).toLowerCase()}: <span className="italic">&ldquo;{formatAdditionText(a, data)}&rdquo;</span>
+          <div className="mx-auto mt-2 h-1 w-20 bg-preto" />
+        </div>
+      )}
+
+      {data.estrofes.map((est) => {
+        const undoCount = stanzaUndoHistory[est.numero]?.length || 0;
+        const selectedVerseIndexes = verseSelections[est.numero] || [];
+        const suggestionResult = suggestionResults[est.numero];
+        const suggestionLoading = suggestionLoadingStanza === est.numero;
+        const suggestionPanelOpen = Boolean(openSuggestionPanels[est.numero]);
+        const selectedLabel = selectedVerseIndexes
+          .map((index) => `v${index + 1}`)
+          .join(" e ");
+
+        return (
+          <div
+            key={est.numero}
+            className="mb-4 rounded-[20px] border-2 border-preto bg-cream p-5 shadow-[inset_0_0_0_1px_rgba(15,12,8,0.06)]"
+          >
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div className="font-heading text-xs font-bold uppercase tracking-widest text-brown-light">
+                Estrofe {est.numero}
               </div>
-              <div className="font-mono text-[11px] text-brown-mid mt-1">Motivo: {a.avaliacao}</div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => onUndoStanza(est.numero)}
+                  disabled={undoCount === 0 || suggestionLoading}
+                  title="Restaurar a versão anterior desta estrofe"
+                  className="btn-secondary rounded-full border border-preto bg-cream px-3 py-1.5 font-heading text-xs font-semibold text-preto transition-all disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Desfazer tentativa{undoCount > 0 ? ` (${undoCount})` : ""}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onToggleSuggestionPanel(est.numero)}
+                  aria-expanded={suggestionPanelOpen}
+                  className={`rounded-full border px-3 py-1.5 font-heading text-xs font-semibold transition-all ${
+                    suggestionPanelOpen
+                      ? "border-preto bg-preto text-cream"
+                      : "btn-secondary border-preto bg-cream text-preto"
+                  }`}
+                >
+                  {suggestionPanelOpen ? "Fechar ajuda da IA" : "Sugestões da IA"}
+                </button>
+              </div>
             </div>
-          ))}
-        </div>
-      ) : null}
 
-      {analysisDirty && analysisData ? (
-        <div className="mb-4 rounded-[18px] border-2 border-preto bg-[var(--amber-light)] px-4 py-3 font-body text-[13px] leading-relaxed text-preto">
-          Você editou o cordel após a última análise. Os avisos de métrica e fidelidade podem estar desatualizados até você analisar novamente.
-        </div>
-      ) : null}
+            {est.versos.map((verse, index) => {
+              const selected = selectedVerseIndexes.includes(index);
+              const selectionDisabled =
+                suggestionLoading ||
+                (!selected && selectedVerseIndexes.length >= 2);
+              return (
+                <div
+                  key={index}
+                  className={suggestionPanelOpen ? "grid grid-cols-[44px_minmax(0,1fr)] gap-2" : ""}
+                >
+                  {suggestionPanelOpen && (
+                    <button
+                      type="button"
+                      onClick={() => onToggleVerseSelection(est.numero, index)}
+                      disabled={selectionDisabled}
+                      aria-pressed={selected}
+                      aria-label={`Selecionar verso ${index + 1} da estrofe ${est.numero}`}
+                      title={
+                        selectionDisabled && !selected
+                          ? "Você já selecionou dois versos"
+                          : `Selecionar verso ${index + 1}`
+                      }
+                      className={`mb-2 rounded-[12px] border font-mono text-xs font-bold transition-all disabled:cursor-not-allowed disabled:opacity-35 ${
+                        selected
+                          ? "border-preto bg-preto text-cream"
+                          : "border-preto/30 bg-[var(--parchment-dark)] text-preto"
+                      }`}
+                    >
+                      v{index + 1}
+                    </button>
+                  )}
+                  <textarea
+                    rows={1}
+                    aria-label={`Estrofe ${est.numero}, verso ${index + 1}`}
+                    value={verse}
+                    onChange={(event) =>
+                      onVerseChange(est.numero, index, event.target.value)
+                    }
+                    onFocus={(event) => {
+                      event.currentTarget.dataset.initialValue = verse;
+                    }}
+                    onBlur={(event) =>
+                      onVerseCommit(
+                        est.numero,
+                        index,
+                        event.currentTarget.dataset.initialValue || "",
+                        event.currentTarget.value
+                      )
+                    }
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") event.preventDefault();
+                    }}
+                    className="mb-2 block w-full resize-y rounded-[14px] border border-preto/20 bg-[var(--parchment-dark)] px-3 py-2 font-body text-[17px] leading-[1.7] italic text-preto shadow-[inset_0_0_0_1px_rgba(15,12,8,0.04)]"
+                  />
+                </div>
+              );
+            })}
 
-      {data.estrofes.map((est) => (
-        <div
-          key={est.numero}
-          className="mb-4 rounded-[20px] border-2 border-preto bg-cream p-5 shadow-[inset_0_0_0_1px_rgba(15,12,8,0.06)]"
-        >
-          <div className="font-heading text-xs font-bold text-brown-light uppercase tracking-widest mb-2.5">
-            Estrofe {est.numero}
+            {est.proposicoes_cobertas && (
+              <p className="mt-2.5 font-mono text-[11px] text-brown-light">
+                ↳ {est.proposicoes_cobertas}
+              </p>
+            )}
+
+            {suggestionPanelOpen && (
+              <div className="mt-4 rounded-[18px] border-2 border-preto bg-[var(--parchment-dark)] p-4">
+                <div className="font-heading text-xs font-bold uppercase tracking-widest text-brown-mid">
+                  Ajuda Localizada
+                </div>
+                <p className="mt-1 font-body text-sm leading-relaxed text-preto">
+                  Selecione um ou dois versos pelos botões numerados. A IA apresentará três alternativas sem alterar o cordel.
+                </p>
+                <label className="mt-3 block font-heading text-[11px] font-semibold uppercase tracking-wide text-brown-mid">
+                  O que você quer melhorar? <span className="normal-case">(opcional)</span>
+                </label>
+                <input
+                  type="text"
+                  value={suggestionNotes[est.numero] || ""}
+                  onChange={(event) =>
+                    onSuggestionNoteChange(est.numero, event.target.value)
+                  }
+                  maxLength={1000}
+                  placeholder="Ex.: preservar esta ideia, mas melhorar a rima e a oralidade"
+                  className="mt-1.5 w-full rounded-[12px] border border-preto/30 bg-cream px-3 py-2 font-body text-sm text-preto outline-none focus:border-preto"
+                />
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => onRequestSuggestions(est.numero)}
+                    disabled={
+                      selectedVerseIndexes.length === 0 ||
+                      suggestionLoadingStanza !== null
+                    }
+                    className="btn-primary rounded-full border-2 border-preto bg-preto px-4 py-2 font-heading text-xs font-bold text-cream transition-all disabled:cursor-not-allowed disabled:opacity-45"
+                  >
+                    {suggestionLoading
+                      ? "Preparando sugestões..."
+                      : `Pedir 3 sugestões${selectedLabel ? ` para ${selectedLabel}` : ""}`}
+                  </button>
+                  {selectedVerseIndexes.length === 0 && (
+                    <span className="font-mono text-[11px] text-brown-mid">
+                      Selecione pelo menos um verso.
+                    </span>
+                  )}
+                </div>
+
+                {suggestionErrors[est.numero] && (
+                  <div role="alert" className="mt-3 rounded-[12px] border border-preto bg-cream px-3 py-2 font-body text-sm text-preto">
+                    {suggestionErrors[est.numero]}
+                  </div>
+                )}
+
+                {suggestionResult && (
+                  <div className="mt-5 border-t-2 border-preto/20 pt-4">
+                    <p className="font-body text-sm font-semibold text-preto">
+                      O texto atual continua preservado. Escolha uma alternativa ou rejeite as que não ajudam.
+                    </p>
+                    <div className="mt-3 space-y-3">
+                      {suggestionResult.alternatives.map((alternative, suggestionIndex) => (
+                        <div
+                          key={`${alternative.versos.join("|")}-${suggestionIndex}`}
+                          className="rounded-[16px] border-2 border-preto bg-cream p-4"
+                        >
+                          <div className="font-heading text-xs font-bold uppercase tracking-wider text-brown-mid">
+                            Alternativa {suggestionIndex + 1}
+                          </div>
+                          <div className="mt-2 space-y-1.5">
+                            {alternative.versos.map((suggestedVerse, verseOffset) => (
+                              <div
+                                key={`${suggestedVerse}-${verseOffset}`}
+                                className="flex gap-2 font-body text-base italic text-preto"
+                              >
+                                <span className="font-mono text-xs not-italic text-brown-mid">
+                                  v{suggestionResult.verseIndexes[verseOffset] + 1}
+                                </span>
+                                <span>{suggestedVerse}</span>
+                              </div>
+                            ))}
+                          </div>
+                          <p className="mt-3 font-body text-sm leading-relaxed text-preto">
+                            {alternative.justificativa}
+                          </p>
+                          <div className="mt-2 space-y-1 font-mono text-[11px] leading-relaxed text-brown-mid">
+                            <div><strong>Métrica:</strong> {alternative.observacao_metrica}</div>
+                            <div><strong>Fidelidade:</strong> {alternative.observacao_fidelidade}</div>
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onAcceptSuggestion(est.numero, suggestionIndex)
+                              }
+                              className="btn-primary rounded-full border-2 border-preto bg-preto px-4 py-2 font-heading text-xs font-bold text-cream transition-all"
+                            >
+                              Usar esta sugestão
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onRejectSuggestion(est.numero, suggestionIndex)
+                              }
+                              className="btn-secondary rounded-full border-2 border-preto bg-cream px-4 py-2 font-heading text-xs font-bold text-preto transition-all"
+                            >
+                              Rejeitar
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => onDismissSuggestions(est.numero)}
+                      className="btn-secondary mt-3 rounded-full border border-preto bg-[var(--parchment-dark)] px-3 py-1.5 font-heading text-xs font-semibold text-preto transition-all"
+                    >
+                      Descartar todas as sugestões
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {est.numero < data.estrofes.length && <XiloDivider />}
           </div>
-          {est.versos.map((v, i) => (
-            <textarea
-              key={i}
-              rows={1}
-              value={v}
-              onChange={(e) => onVerseChange(est.numero, i, e.target.value)}
-              onFocus={(e) => {
-                e.currentTarget.dataset.initialValue = v;
-              }}
-              onBlur={(e) =>
-                onVerseCommit(
-                  est.numero,
-                  i,
-                  e.currentTarget.dataset.initialValue || "",
-                  e.currentTarget.value
-                )
-              }
-              onKeyDown={(e) => {
-                if (e.key === "Enter") e.preventDefault();
-              }}
-              className="mb-2 block w-full resize-y rounded-[14px] border border-preto/20 bg-[var(--parchment-dark)] px-3 py-2 font-body text-[17px] leading-[1.7] italic text-preto shadow-[inset_0_0_0_1px_rgba(15,12,8,0.04)]"
-            />
-          ))}
-          {est.proposicoes_cobertas && (
-            <p className="font-mono text-[11px] text-brown-light mt-2.5 mb-0">
-              ↳ {est.proposicoes_cobertas}
-            </p>
-          )}
-          {est.numero < data.estrofes.length && <XiloDivider />}
-        </div>
-      ))}
+        );
+      })}
 
       {/* Listen button */}
       <div className="mt-4 flex flex-wrap items-center gap-3">
@@ -1011,22 +1381,25 @@ function CatalogView({
   };
 
   return (
-    <section className="mt-8 rounded-[24px] border-[3px] border-preto bg-parchment px-4 py-5 shadow-[inset_0_0_0_1px_rgba(15,12,8,0.12)] sm:px-6 sm:py-6">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h2 className="font-heading text-lg font-bold uppercase tracking-[0.08em] text-preto">
-            Catálogo dos Salmos
-          </h2>
-          <p className="mt-1 max-w-2xl font-body text-sm text-brown-mid">
-            Catálogo sincronizado para toda a equipe. O banco compartilhado guarda texto, análise, relatório, histórico e o link do áudio persistido. Clique em um salmo salvo para carregar a versão compartilhada ou marque o próximo salmo a trabalhar.
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
+    <details open className="group mt-8 rounded-[24px] border-[3px] border-preto bg-parchment px-4 py-5 shadow-[inset_0_0_0_1px_rgba(15,12,8,0.12)] sm:px-6 sm:py-6">
+      <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-4">
+        <span className="font-heading text-lg font-bold uppercase tracking-[0.08em] text-preto">
+          Catálogo dos Salmos
+        </span>
+        <span className="flex flex-wrap items-center gap-2">
           <Badge ok={completed > 0}>{completed}/150 prontos</Badge>
           <Badge ok={inProgress === 0}>{inProgress} em andamento</Badge>
           <Badge ok={remaining === 0}>{remaining} faltando</Badge>
-        </div>
-      </div>
+          <span aria-hidden="true" className="ml-1 text-lg text-preto transition-transform group-open:rotate-180">
+            ⌄
+          </span>
+        </span>
+      </summary>
+
+      <div className="mt-4 border-t border-preto/20 pt-4">
+        <p className="max-w-2xl font-body text-sm text-brown-mid">
+          Catálogo sincronizado para toda a equipe. O banco compartilhado guarda Mapa, projeto, cordel, auditoria, relatório, histórico e o link do áudio persistido. Clique em um salmo salvo para carregar a versão compartilhada ou marque o próximo salmo a trabalhar.
+        </p>
 
       <div className="mt-5 rounded-[20px] border-2 border-preto bg-cream p-4 shadow-[inset_0_0_0_1px_rgba(15,12,8,0.06)]">
         <div className="flex flex-wrap items-end gap-3">
@@ -1110,7 +1483,8 @@ function CatalogView({
           );
         })}
       </div>
-    </section>
+      </div>
+    </details>
   );
 }
 
@@ -1129,71 +1503,77 @@ function MetricaView({ data }: { data: AnalysisData }) {
   });
 
   return (
-    <div>
-      {/* Summary */}
-      <div className="flex gap-3.5 mb-5 flex-wrap">
-        {[
-          { n: `${okV}/${totalV}`, l: "Versos 7 sílabas", ok: okV === totalV },
-          { n: `${okR}/${totalR}`, l: "Rimas ABCBDB", ok: okR === totalR },
-        ].map((x) => (
-          <div
-            key={x.l}
-            className="min-w-[130px] flex-1 rounded-[18px] border-2 border-preto bg-[var(--parchment-dark)] px-4 py-3 text-center"
-          >
-            <p
-              className={`font-heading text-2xl font-bold m-0 ${
-                x.ok ? "text-preto" : "text-brown-mid"
-              }`}
+    <details open className="group">
+      <summary className="mb-5 flex cursor-pointer list-none items-center justify-between rounded-[16px] border-2 border-preto bg-cream px-4 py-3 font-heading text-xs font-bold uppercase tracking-widest text-preto">
+        <span>Métrica e Rima</span>
+        <span aria-hidden="true" className="text-lg transition-transform group-open:rotate-180">
+          ⌄
+        </span>
+      </summary>
+      <div>
+        <div className="flex gap-3.5 mb-5 flex-wrap">
+          {[
+            { n: `${okV}/${totalV}`, l: "Versos 7 sílabas", ok: okV === totalV },
+            { n: `${okR}/${totalR}`, l: "Rimas ABCBDB", ok: okR === totalR },
+          ].map((x) => (
+            <div
+              key={x.l}
+              className="min-w-[130px] flex-1 rounded-[18px] border-2 border-preto bg-[var(--parchment-dark)] px-4 py-3 text-center"
             >
-              {x.n}
-            </p>
-            <p className="font-heading text-[11px] text-brown-mid uppercase tracking-wide mt-1">
-              {x.l}
-            </p>
-          </div>
-        ))}
-      </div>
-
-      {/* Per-strophe */}
-      {data.estrofes.map((est) => (
-        <div
-          key={est.numero}
-          className="mb-4 rounded-[20px] border-2 border-preto bg-cream p-5 shadow-[inset_0_0_0_1px_rgba(15,12,8,0.06)]"
-        >
-          <div className="flex justify-between items-center mb-2">
-            <span className="font-heading text-xs font-bold text-brown-light uppercase tracking-widest">
-              Estrofe {est.numero}
-            </span>
-            <Badge ok={est.rima_ok}>
-              Rima: {est.rima_ok ? "✓" : "✗"}{" "}
-              {est.rima_palavras?.join(" / ")}
-            </Badge>
-          </div>
-          {est.versos?.map((v, i) => (
-            <div key={i} className="mb-1.5">
-              <div className="flex justify-between items-baseline">
-                <span className="font-body text-sm text-preto">
-                  <span className="font-mono text-[11px] text-brown-light mr-2">
-                    v{i + 1}
-                  </span>
-                  {v.texto}
-                </span>
-                <Badge ok={v.correto}>{v.silabas}</Badge>
-              </div>
-              <div
-                className={`font-mono text-[11px] px-1.5 py-0.5 rounded inline-block mt-0.5 ${
-                  v.correto
-                    ? "bg-[var(--green-light)] text-preto"
-                    : "bg-[var(--red-light)] text-preto"
+              <p
+                className={`font-heading text-2xl font-bold m-0 ${
+                  x.ok ? "text-preto" : "text-brown-mid"
                 }`}
               >
-                {v.escansao}
-              </div>
+                {x.n}
+              </p>
+              <p className="font-heading text-[11px] text-brown-mid uppercase tracking-wide mt-1">
+                {x.l}
+              </p>
             </div>
           ))}
         </div>
-      ))}
-    </div>
+
+        {data.estrofes.map((est) => (
+          <div
+            key={est.numero}
+            className="mb-4 rounded-[20px] border-2 border-preto bg-cream p-5 shadow-[inset_0_0_0_1px_rgba(15,12,8,0.06)]"
+          >
+            <div className="flex justify-between items-center mb-2">
+              <span className="font-heading text-xs font-bold text-brown-light uppercase tracking-widest">
+                Estrofe {est.numero}
+              </span>
+              <Badge ok={est.rima_ok}>
+                Rima: {est.rima_ok ? "✓" : "✗"}{" "}
+                {est.rima_palavras?.join(" / ")}
+              </Badge>
+            </div>
+            {est.versos?.map((v, i) => (
+              <div key={i} className="mb-1.5">
+                <div className="flex justify-between items-baseline">
+                  <span className="font-body text-sm text-preto">
+                    <span className="font-mono text-[11px] text-brown-light mr-2">
+                      v{i + 1}
+                    </span>
+                    {v.texto}
+                  </span>
+                  <Badge ok={v.correto}>{v.silabas}</Badge>
+                </div>
+                <div
+                  className={`font-mono text-[11px] px-1.5 py-0.5 rounded inline-block mt-0.5 ${
+                    v.correto
+                      ? "bg-[var(--green-light)] text-preto"
+                      : "bg-[var(--red-light)] text-preto"
+                  }`}
+                >
+                  {v.escansao}
+                </div>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    </details>
   );
 }
 
@@ -1212,52 +1592,113 @@ function FidelidadeView({
 
   return (
     <div>
-      <div className="mb-4 rounded-[20px] border-2 border-preto bg-cream p-5 shadow-[inset_0_0_0_1px_rgba(15,12,8,0.06)]">
-        <div className="font-heading text-xs font-bold text-brown-light uppercase tracking-widest mb-2.5">
-          Cobertura das Proposições
+      {data.resumo && (
+        <div className={`mb-4 rounded-[20px] border-2 border-preto p-5 ${
+          data.resumo.aprovado ? "bg-cream" : "bg-[var(--amber-light)]"
+        }`}>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="font-heading text-sm font-bold uppercase tracking-wider text-preto">
+              {data.resumo.aprovado
+                ? "Auditoria Aprovada"
+                : "Encaminhar para Lapidação Humana"}
+            </div>
+            <Badge ok={data.resumo.oralidade_ok && data.resumo.qualidade_poetica_ok}>
+              Oralidade e poesia
+            </Badge>
+          </div>
+          <p className="mt-2 font-body text-sm leading-relaxed text-preto">
+            {data.resumo.parecer}
+          </p>
         </div>
-        {data.fidelidade.map((p) => (
-          <div
-            key={p.proposicao}
-            className="flex items-center gap-2.5 py-1.5 border-b border-parchment-dark flex-wrap"
-          >
-            <span
-              className={`font-mono text-[11px] font-bold px-2 py-0.5 rounded-full ${
-                statusStyle[p.status] || statusStyle.PARCIAL
-              }`}
-            >
-              {p.status}
-            </span>
-            <span className="font-body text-sm">
-              Proposição {p.proposicao}
-              {p.estrofe ? ` → Est. ${p.estrofe}` : ""}
-            </span>
-            {p.nota && (
-              <span className="font-mono text-[11px] text-brown-light">
-                — {p.nota}
-              </span>
-            )}
-          </div>
-        ))}
-      </div>
+      )}
+      <details open className="group mb-4 rounded-[20px] border-2 border-preto bg-cream p-5 shadow-[inset_0_0_0_1px_rgba(15,12,8,0.06)]">
+        <summary className="flex cursor-pointer list-none items-center justify-between font-heading text-xs font-bold uppercase tracking-widest text-brown-light">
+          <span>Cobertura das Proposições</span>
+          <span aria-hidden="true" className="text-lg text-preto transition-transform group-open:rotate-180">
+            ⌄
+          </span>
+        </summary>
+        <div className="mt-2.5 border-t border-parchment-dark pt-1">
+          {data.fidelidade.map((p) => (
+            <div key={p.proposicao} className="border-b border-parchment-dark py-2.5">
+              <div className="flex flex-wrap items-center gap-2.5">
+                <span
+                  className={`font-mono text-[11px] font-bold px-2 py-0.5 rounded-full ${
+                    statusStyle[p.status] || statusStyle.PARCIAL
+                  }`}
+                >
+                  {p.status}
+                </span>
+                <span className="font-body text-sm font-semibold">
+                  Proposição {p.proposicao}{p.estrofe ? ` → Est. ${p.estrofe}` : ""}
+                </span>
+                {p.resumo && <span className="font-body text-sm text-preto">{p.resumo}</span>}
+              </div>
+              {p.evidencia && (
+                <p className="mt-1 font-body text-[13px] italic text-brown-mid">
+                  Evidência no cordel: &ldquo;{p.evidencia}&rdquo;
+                </p>
+              )}
+              {p.nota && <p className="mt-1 font-mono text-[11px] text-brown-light">{p.nota}</p>}
+            </div>
+          ))}
+        </div>
+      </details>
 
-      {data.adicoes?.length > 0 && (
-        <div className="mb-4 rounded-[20px] border-2 border-preto bg-cream p-5 shadow-[inset_0_0_0_1px_rgba(15,12,8,0.06)]">
-          <div className="font-heading text-xs font-bold text-brown-light uppercase tracking-widest mb-2.5">
-            Adições Semânticas Detectadas
+      <details open className="group mb-4 rounded-[20px] border-2 border-preto bg-cream p-5 shadow-[inset_0_0_0_1px_rgba(15,12,8,0.06)]">
+        <summary className="flex cursor-pointer list-none items-center justify-between font-heading text-xs font-bold uppercase tracking-widest text-brown-light">
+          <span>Adições Detectadas</span>
+          <span aria-hidden="true" className="text-lg text-preto transition-transform group-open:rotate-180">
+            ⌄
+          </span>
+        </summary>
+        <div className="mt-2.5 border-t border-parchment-dark pt-3">
+          <p className="mb-3 font-body text-[13px] leading-relaxed text-brown-mid">
+            Repetições, reformulações e outros recursos de oralidade podem ser legítimos.
+            Verifique se estas adições estilísticas não introduzem elementos semânticos
+            ausentes do Mapa de Significado.
+          </p>
+          {data.adicoes?.length > 0 ? (
+            data.adicoes.map((a, i) => (
+              <div
+                key={i}
+                className="border-b border-parchment-dark py-1.5 last:border-b-0"
+              >
+                <span className="font-body text-sm italic">
+                  Adição detectada em {formatAdditionLocation(a.estrofe, a.verso).toLowerCase()}: &ldquo;{formatAdditionText(a, cordelData)}&rdquo;
+                </span>
+                <br />
+                <span className="font-mono text-xs text-brown-mid">
+                  Motivo: {a.avaliacao}
+                </span>
+              </div>
+            ))
+          ) : (
+            <p className="font-body text-sm text-preto">Nenhuma adição foi detectada.</p>
+          )}
+        </div>
+      </details>
+
+      {data.problemas?.length > 0 && (
+        <div className="rounded-[20px] border-2 border-preto bg-[var(--parchment-dark)] p-5">
+          <div className="mb-2.5 font-heading text-xs font-bold uppercase tracking-widest text-brown-light">
+            Orientações da Auditoria
           </div>
-          {data.adicoes.map((a, i) => (
-            <div
-              key={i}
-              className="py-1.5 border-b border-parchment-dark"
-            >
-              <span className="font-body text-sm italic">
-                Adição detectada em {formatAdditionLocation(a.estrofe).toLowerCase()}: &ldquo;{formatAdditionText(a, cordelData)}&rdquo;
-              </span>
-              <br />
-              <span className="font-mono text-xs text-brown-mid">
-                Motivo: {a.avaliacao}
-              </span>
+          {data.problemas.map((problema, index) => (
+            <div key={`${problema.tipo}-${problema.estrofe}-${problema.verso}-${index}`} className="border-b border-preto/10 py-2 last:border-b-0">
+              <div className="font-body text-sm font-semibold text-preto">
+                {problema.tipo} · {problema.prioridade}
+                {problema.estrofe ? ` · Estrofe ${problema.estrofe}` : ""}
+                {problema.verso ? `, verso ${problema.verso}` : ""}
+              </div>
+              {problema.trecho && (
+                <div className="mt-1 font-body text-sm italic text-preto">
+                  &ldquo;{problema.trecho}&rdquo;
+                </div>
+              )}
+              <div className="mt-1 font-mono text-[11px] text-brown-mid">
+                {problema.descricao} Correção: {problema.instrucao_de_correcao}
+              </div>
             </div>
           ))}
         </div>
@@ -1270,12 +1711,12 @@ function FidelidadeView({
 
 export default function ForjaDeCordel() {
   const [meaningMapInput, setMeaningMapInput] = useState("");
-  const [existingCordelInput, setExistingCordelInput] = useState("");
   const [psalmNumberInput, setPsalmNumberInput] = useState("");
-  const [inputMode, setInputMode] = useState<InputMode>("analyze-existing");
   const [phase, setPhase] = useState<Phase>("input");
   const [cordelData, setCordelData] = useState<CordelData | null>(null);
   const [analysisData, setAnalysisData] = useState<AnalysisData | null>(null);
+  const [compositionPlan, setCompositionPlan] = useState<CompositionPlan | null>(null);
+  const [workflowModels, setWorkflowModels] = useState<Record<string, string>>({});
   const [analysisDirty, setAnalysisDirty] = useState(false);
   const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([]);
   const [catalog, setCatalog] = useState<PsalmCatalogItem[]>([]);
@@ -1283,9 +1724,23 @@ export default function ForjaDeCordel() {
   const [catalogSyncing, setCatalogSyncing] = useState(false);
   const [catalogError, setCatalogError] = useState("");
   const [meaningMapText, setMeaningMapText] = useState("");
-  const [activeTab, setActiveTab] = useState<"cordel" | "metrica" | "fidelidade" | "relatorio">("cordel");
+  const [simplifiedMeaningMapText, setSimplifiedMeaningMapText] = useState("");
+  const [activeTab, setActiveTab] = useState<"metrica" | "fidelidade" | "relatorio">(
+    "metrica"
+  );
   const [error, setError] = useState("");
   const [revisionCount, setRevisionCount] = useState(0);
+  const [stanzaUndoHistory, setStanzaUndoHistory] = useState<StanzaUndoHistory>({});
+  const [verseSelections, setVerseSelections] = useState<VerseSelections>({});
+  const [suggestionResults, setSuggestionResults] =
+    useState<StanzaSuggestionResults>({});
+  const [suggestionNotes, setSuggestionNotes] = useState<StanzaTextState>({});
+  const [suggestionErrors, setSuggestionErrors] = useState<StanzaTextState>({});
+  const [openSuggestionPanels, setOpenSuggestionPanels] =
+    useState<StanzaOpenState>({});
+  const [suggestionLoadingStanza, setSuggestionLoadingStanza] = useState<
+    number | null
+  >(null);
 
   // Audio
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
@@ -1302,15 +1757,24 @@ export default function ForjaDeCordel() {
   const recordingChunksRef = useRef<Blob[]>([]);
   const userAudioObjectUrlRef = useRef<string | null>(null);
   const discardRecordedAudioRef = useRef(false);
-  const cordelFileInputRef = useRef<HTMLInputElement | null>(null);
   const meaningMapFileInputRef = useRef<HTMLInputElement | null>(null);
+  const suggestionRequestTokenRef = useRef(0);
 
-  const isLoading = ["analyzing", "revising"].includes(phase);
+  const isLoading = [
+    "simplifying",
+    "planning",
+    "composing",
+    "analyzing",
+    "revising",
+  ].includes(phase);
   const elapsed = useTimer(isLoading);
 
   const phaseLabels: Record<string, string> = {
-    analyzing: "Analisando métrica e fidelidade",
-    revising: "Revisando estrofes com problemas",
+    simplifying: "Preparando o Mapa para a composição",
+    planning: "Lendo o Mapa e projetando a cobertura",
+    composing: "Compondo as sextilhas",
+    analyzing: "Auditando métrica, rima, oralidade e fidelidade",
+    revising: "Executando uma revisão opcional por IA",
   };
 
   const appendHistory = useCallback(
@@ -1355,6 +1819,22 @@ export default function ForjaDeCordel() {
     setUserAudioError("");
   }, []);
 
+  const resetLocalEditingState = useCallback(() => {
+    suggestionRequestTokenRef.current += 1;
+    setStanzaUndoHistory({});
+    setVerseSelections({});
+    setSuggestionResults({});
+    setSuggestionNotes({});
+    setSuggestionErrors({});
+    setOpenSuggestionPanels({});
+    setSuggestionLoadingStanza(null);
+  }, []);
+
+  const invalidateSuggestionRequest = useCallback(() => {
+    suggestionRequestTokenRef.current += 1;
+    setSuggestionLoadingStanza(null);
+  }, []);
+
   const refreshCatalog = useCallback(async () => {
     try {
       setCatalogLoading(true);
@@ -1385,7 +1865,7 @@ export default function ForjaDeCordel() {
     };
   }, []);
 
-  const inferredPsalmNumber = extractPsalmNumber(meaningMapText || meaningMapInput);
+  const inferredPsalmNumber = extractPsalmNumber(meaningMapInput || meaningMapText);
   const currentPsalmNumber = normalizePsalmNumber(psalmNumberInput) ?? inferredPsalmNumber;
   const currentSavedItem =
     currentPsalmNumber != null
@@ -1395,110 +1875,178 @@ export default function ForjaDeCordel() {
   // ── Handlers ──
 
   const handleCompose = useCallback(async () => {
-    if (!meaningMapInput.trim()) return;
-    setPhase("composing");
+    const sourceMap = meaningMapInput.trim();
+    if (!sourceMap) return;
+
     setError("");
     setCordelData(null);
     setAnalysisData(null);
+    setCompositionPlan(null);
+    setWorkflowModels({});
     setAnalysisDirty(false);
     setHistoryEntries([]);
-    setMeaningMapText(meaningMapInput);
-    setActiveTab("cordel");
-    setRevisionCount(0);
-    setAudioUrl(null);
-    setAudioFileName(null);
-    setAudioPathname(null);
-    setAudioError("");
-
-    try {
-      const data = await apiPost("/api/compose", { meaningMap: meaningMapInput });
-      setCordelData(data.cordel);
-      setHistoryEntries([
-        {
-          id: 1,
-          momento: fmtDateTime(),
-          tipo: "origem",
-          titulo: "Cordel composto a partir do Mapa de Significado",
-          detalhes: [
-            `Estrofes geradas: ${data.cordel.estrofes.length}`,
-            "Origem: fluxo de composição automática.",
-          ],
-        },
-      ]);
-      setPhase("composed");
-    } catch (e: any) {
-      setError(e.message);
-      setPhase("error");
-    }
-  }, [meaningMapInput]);
-
-  const handleAnalyzeExisting = useCallback(() => {
-    if (!existingCordelInput.trim() || !meaningMapInput.trim()) return;
-    setError("");
-    setInputMode("analyze-existing");
-    setCordelData(null);
-    setAnalysisData(null);
-    setAnalysisDirty(false);
-    setHistoryEntries([]);
-    setActiveTab("cordel");
+    setMeaningMapText(sourceMap);
+    setSimplifiedMeaningMapText("");
+    setActiveTab("metrica");
     setRevisionCount(0);
     setAudioUrl(null);
     setAudioFileName(null);
     setAudioPathname(null);
     setAudioError("");
     clearUserAudio();
+    resetLocalEditingState();
+
+    const models: Record<string, string> = {};
 
     try {
-      const cordel = parseExistingCordelText(existingCordelInput);
-      setCordelData(cordel);
-      setMeaningMapText(meaningMapInput);
+      setPhase("simplifying");
+      const simplifyResponse = await apiPost("/api/simplify", {
+        meaningMap: sourceMap,
+      });
+      const processMap = String(simplifyResponse.simplifiedMap || "").trim();
+      if (!processMap) {
+        throw new Error("A preparação do Mapa não produziu um texto válido.");
+      }
+      setSimplifiedMeaningMapText(processMap);
       setHistoryEntries([
         {
           id: 1,
           momento: fmtDateTime(),
           tipo: "origem",
-          titulo: "Cordel importado para análise",
+          titulo: "Mapa de Significado original recebido",
           detalhes: [
-            `Estrofes importadas: ${cordel.estrofes.length}`,
-            "Origem: cola de cordel existente.",
+            "O texto integral foi preservado como fonte de autoridade para a auditoria teológica.",
+          ],
+        },
+        {
+          id: 2,
+          momento: fmtDateTime(),
+          tipo: "planejamento",
+          titulo: "Mapa preparado para a composição",
+          detalhes: [
+            "Filtragem extrativa, sem IA, resumo ou paráfrase.",
+            `${Number(simplifyResponse.originalCharacters).toLocaleString(
+              "pt-BR"
+            )} → ${Number(simplifyResponse.simplifiedCharacters).toLocaleString(
+              "pt-BR"
+            )} caracteres (${Number(simplifyResponse.reduction).toLocaleString(
+              "pt-BR"
+            )}% de redução).`,
+            "Todo o conteúdo das proposições foi preservado literalmente e na ordem original; somente marcas de navegação foram removidas.",
           ],
         },
       ]);
-      setPhase("composed");
+
+      setPhase("planning");
+      const planResponse = await apiPost("/api/plan", { meaningMap: processMap });
+      const plan = planResponse.plan as CompositionPlan;
+      models.planejamento = planResponse.model;
+      setCompositionPlan(plan);
+      setWorkflowModels({ ...models });
+      if (!psalmNumberInput.trim() && plan.salmo > 0) {
+        setPsalmNumberInput(String(plan.salmo));
+      }
+      appendHistory({
+        tipo: "planejamento",
+        titulo: "Projeto de composição concluído",
+        detalhes: [
+          `Modelo: ${planResponse.model}`,
+          `Estrofes planejadas: ${plan.estrutura.total_estrofes}`,
+          `Proposições mapeadas: ${plan.cobertura.length}`,
+          plan.estrutura.justificativa,
+        ],
+      });
+
+      setPhase("composing");
+      const composeResponse = await apiPost("/api/compose", {
+        meaningMap: processMap,
+        plan,
+      });
+      const currentCordel = composeResponse.cordel as CordelData;
+      models.composicao = composeResponse.model;
+      setWorkflowModels({ ...models });
+      setCordelData(currentCordel);
+      appendHistory({
+        tipo: "composicao",
+        titulo: "Primeira versão do cordel composta",
+        detalhes: [
+          `Modelo: ${composeResponse.model}`,
+          `Estrofes produzidas: ${currentCordel.estrofes.length}`,
+          "A versão seguirá para auditoria independente antes de ser apresentada como resultado.",
+        ],
+      });
+
+      setPhase("analyzing");
+      const analyzeResponse = await apiPost("/api/analyze", {
+        cordel: currentCordel,
+        meaningMap: sourceMap,
+      });
+      const analysis = normalizeAnalysisData(analyzeResponse.analysis);
+      models.auditoria_1 = analyzeResponse.model;
+      setWorkflowModels({ ...models });
+      const summary = summarizeAnalysis(analysis);
+      appendHistory({
+        tipo: "analise",
+        titulo: "Auditoria independente concluída",
+        detalhes: [
+          `Modelo: ${analyzeResponse.model}`,
+          `Versos corretos: ${summary.correctVerses}/${summary.totalVerses}`,
+          `Rimas corretas: ${summary.correctRhymes}/${summary.totalRhymes}`,
+          `Proposições ausentes: ${summary.ausentes}`,
+          `Adições detectadas: ${summary.additions}`,
+          "Resultado encaminhado para lapidação humana. A revisão por IA permanece disponível como recurso opcional.",
+          analysis.resumo?.parecer || "Parecer global não informado.",
+        ],
+      });
+
+      setCordelData(currentCordel);
+      setAnalysisData(analysis);
+      setAnalysisDirty(false);
+      setWorkflowModels(models);
+      setPhase("completed");
+      setActiveTab("metrica");
     } catch (e: any) {
+      setWorkflowModels(models);
       setError(e.message);
       setPhase("error");
     }
-  }, [clearUserAudio, existingCordelInput, meaningMapInput]);
+  }, [
+    appendHistory,
+    clearUserAudio,
+    meaningMapInput,
+    psalmNumberInput,
+    resetLocalEditingState,
+  ]);
 
   const handleAnalyze = useCallback(async () => {
-    const propositions = extractPropositionsText(meaningMapText);
-    if (!cordelData || !propositions.trim()) return;
+    if (!cordelData || !meaningMapText.trim()) return;
     setPhase("analyzing");
     setError("");
-    setAnalysisData(null);
-    setAnalysisDirty(false);
 
     try {
       const data = await apiPost("/api/analyze", {
         cordel: cordelData,
-        propositions,
+        meaningMap: meaningMapText,
       });
       const normalizedAnalysis = normalizeAnalysisData(data.analysis);
       setAnalysisData(normalizedAnalysis);
       setAnalysisDirty(false);
+      setWorkflowModels((current) => ({
+        ...current,
+        auditoria_manual: data.model,
+      }));
       const summary = summarizeAnalysis(normalizedAnalysis);
       appendHistory({
         tipo: "analise",
-        titulo: "Análise métrica e de fidelidade concluída",
+        titulo: "Reanálise após edição manual concluída",
         detalhes: [
+          `Modelo: ${data.model}`,
           `Versos corretos: ${summary.correctVerses}/${summary.totalVerses}`,
           `Rimas corretas: ${summary.correctRhymes}/${summary.totalRhymes}`,
-          `Proposições ausentes: ${summary.ausentes}`,
-          `Adições semânticas detectadas: ${summary.additions}`,
+          normalizedAnalysis.resumo?.parecer || "Parecer global não informado.",
         ],
       });
-      setPhase("analyzed");
+      setPhase("completed");
     } catch (e: any) {
       setError(e.message);
       setPhase("error");
@@ -1506,61 +2054,95 @@ export default function ForjaDeCordel() {
   }, [appendHistory, cordelData, meaningMapText]);
 
   const handleRevise = useCallback(async () => {
-    const propositions = extractPropositionsText(meaningMapText);
-    if (!cordelData || !analysisData || !propositions.trim()) return;
+    if (!cordelData || !analysisData || !meaningMapText.trim()) return;
     setPhase("revising");
     setError("");
 
     try {
-      const issues: string[] = [];
-      analysisData.estrofes?.forEach((est) => {
-        const bad = est.versos?.filter((v) => !v.correto) || [];
-        if (bad.length)
-          issues.push(`Estrofe ${est.numero}: ${bad.length} verso(s) métrica errada`);
-        if (!est.rima_ok)
-          issues.push(`Estrofe ${est.numero}: rima falhou`);
-      });
-      analysisData.adicoes?.forEach((a) =>
-        issues.push(
-          `${formatAdditionLocation(a.estrofe)}: adição — "${formatAdditionText(
-            a,
-            cordelData
-          )}"`
-        )
-      );
-      analysisData.fidelidade
-        ?.filter((f) => f.status === "AUSENTE")
-        .forEach((f) => issues.push(`Proposição ${f.proposicao} AUSENTE`));
-
-      const data = await apiPost("/api/revise", {
+      const reviseResponse = await apiPost("/api/revise", {
         cordel: cordelData,
-        issues,
-        propositions,
+        analysis: analysisData,
+        meaningMap: simplifiedMeaningMapText || meaningMapText,
+        plan: compositionPlan,
       });
-      const changeDetails = describeCordelChanges(cordelData, data.cordel);
-      setCordelData(data.cordel);
-      setAnalysisData(null);
-      setAnalysisDirty(false);
-      setRevisionCount((c) => c + 1);
+      const revisedCordel = reviseResponse.cordel as CordelData;
+      const changes = describeCordelChanges(cordelData, revisedCordel);
+      const nextRevision = revisionCount + 1;
+      setStanzaUndoHistory((current) => {
+        const next = { ...current };
+        for (const stanza of cordelData.estrofes) {
+          const revisedStanza = revisedCordel.estrofes.find(
+            (item) => item.numero === stanza.numero
+          );
+          if (
+            revisedStanza &&
+            JSON.stringify(revisedStanza.versos) !== JSON.stringify(stanza.versos)
+          ) {
+            next[stanza.numero] = [
+              ...(next[stanza.numero] || []),
+              [...stanza.versos],
+            ].slice(-20);
+          }
+        }
+        return next;
+      });
+      suggestionRequestTokenRef.current += 1;
+      setVerseSelections({});
+      setSuggestionResults({});
+      setSuggestionErrors({});
+      setSuggestionLoadingStanza(null);
+      setCordelData(revisedCordel);
+      setRevisionCount(nextRevision);
       appendHistory({
         tipo: "revisao",
-        titulo: `Revisão automática ${revisionCount + 1} aplicada`,
+        titulo: `Revisão opcional por IA ${nextRevision} aplicada`,
         detalhes: [
-          ...issues.slice(0, 5),
-          ...(changeDetails.length ? changeDetails.slice(0, 8) : ["Nenhuma alteração textual detectada."]),
+          `Modelo: ${reviseResponse.model}`,
+          ...(changes.length ? changes.slice(0, 12) : ["Nenhuma alteração textual detectada."]),
         ],
       });
-      setPhase("composed");
-      setActiveTab("cordel");
+
+      setPhase("analyzing");
+      const analyzeResponse = await apiPost("/api/analyze", {
+        cordel: revisedCordel,
+        meaningMap: meaningMapText,
+      });
+      const normalizedAnalysis = normalizeAnalysisData(analyzeResponse.analysis);
+      setAnalysisData(normalizedAnalysis);
+      setAnalysisDirty(false);
+      setWorkflowModels((current) => ({
+        ...current,
+        [`lapidacao_${nextRevision}`]: reviseResponse.model,
+        [`auditoria_pos_lapidacao_${nextRevision}`]: analyzeResponse.model,
+      }));
+      appendHistory({
+        tipo: "analise",
+        titulo: `Auditoria após revisão por IA ${nextRevision} concluída`,
+        detalhes: [
+          `Modelo: ${analyzeResponse.model}`,
+          normalizedAnalysis.resumo?.parecer || "Parecer global não informado.",
+        ],
+      });
       setAudioUrl(null);
       setAudioFileName(null);
       setAudioPathname(null);
       clearUserAudio();
+      setPhase("completed");
+      setActiveTab("metrica");
     } catch (e: any) {
       setError(e.message);
       setPhase("error");
     }
-  }, [appendHistory, clearUserAudio, cordelData, analysisData, meaningMapText, revisionCount]);
+  }, [
+    analysisData,
+    appendHistory,
+    clearUserAudio,
+    compositionPlan,
+    cordelData,
+    meaningMapText,
+    revisionCount,
+    simplifiedMeaningMapText,
+  ]);
 
   const handleListen = useCallback(async () => {
     if (!cordelData) return;
@@ -1721,9 +2303,11 @@ export default function ForjaDeCordel() {
 
   const handleCordelVerseChange = useCallback(
     (estrofeNumero: number, versoIndex: number, value: string) => {
+      invalidateSuggestionRequest();
       setCordelData((current) => {
         if (!current) return current;
         return {
+          ...current,
           estrofes: current.estrofes.map((est) =>
             est.numero === estrofeNumero
               ? {
@@ -1740,16 +2324,25 @@ export default function ForjaDeCordel() {
       if (analysisData) {
         setAnalysisDirty(true);
       }
-      if (phase === "analyzed") {
-        setPhase("composed");
-      }
+      setSuggestionResults((current) => {
+        if (!current[estrofeNumero]) return current;
+        const next = { ...current };
+        delete next[estrofeNumero];
+        return next;
+      });
+      setSuggestionErrors((current) => {
+        if (!current[estrofeNumero]) return current;
+        const next = { ...current };
+        delete next[estrofeNumero];
+        return next;
+      });
       setAudioUrl(null);
       setAudioFileName(null);
       setAudioPathname(null);
       setAudioError("");
       clearUserAudio();
     },
-    [analysisData, clearUserAudio, phase]
+    [analysisData, clearUserAudio, invalidateSuggestionRequest]
   );
 
   const handleCordelVerseCommit = useCallback(
@@ -1761,14 +2354,320 @@ export default function ForjaDeCordel() {
     ) => {
       if (previousValue === nextValue) return;
 
+      const stanza = cordelData?.estrofes.find(
+        (item) => item.numero === estrofeNumero
+      );
+      if (stanza) {
+        const previousVerses = stanza.versos.map((verse, index) =>
+          index === versoIndex ? previousValue : verse
+        );
+        setStanzaUndoHistory((current) => ({
+          ...current,
+          [estrofeNumero]: [
+            ...(current[estrofeNumero] || []),
+            previousVerses,
+          ].slice(-20),
+        }));
+      }
+
       appendHistory({
         tipo: "edicao",
         titulo: `Edição manual na estrofe ${estrofeNumero}, verso ${versoIndex + 1}`,
         detalhes: [`Antes: "${previousValue}"`, `Depois: "${nextValue}"`],
       });
     },
-    [appendHistory]
+    [appendHistory, cordelData]
   );
+
+  const handleUndoStanza = useCallback(
+    (estrofeNumero: number) => {
+      const snapshots = stanzaUndoHistory[estrofeNumero] || [];
+      const previousVerses = snapshots[snapshots.length - 1];
+      if (!previousVerses) return;
+
+      invalidateSuggestionRequest();
+      setCordelData((current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          estrofes: current.estrofes.map((stanza) =>
+            stanza.numero === estrofeNumero
+              ? { ...stanza, versos: [...previousVerses] }
+              : stanza
+          ),
+        };
+      });
+      setStanzaUndoHistory((current) => ({
+        ...current,
+        [estrofeNumero]: (current[estrofeNumero] || []).slice(0, -1),
+      }));
+      setSuggestionResults((current) => {
+        const next = { ...current };
+        delete next[estrofeNumero];
+        return next;
+      });
+      setVerseSelections((current) => ({ ...current, [estrofeNumero]: [] }));
+      setSuggestionErrors((current) => {
+        const next = { ...current };
+        delete next[estrofeNumero];
+        return next;
+      });
+      if (analysisData) setAnalysisDirty(true);
+      setAudioUrl(null);
+      setAudioFileName(null);
+      setAudioPathname(null);
+      setAudioError("");
+      clearUserAudio();
+      appendHistory({
+        tipo: "edicao",
+        titulo: `Tentativa desfeita na estrofe ${estrofeNumero}`,
+        detalhes: ["A versão imediatamente anterior da sextilha foi restaurada."],
+      });
+    },
+    [
+      analysisData,
+      appendHistory,
+      clearUserAudio,
+      invalidateSuggestionRequest,
+      stanzaUndoHistory,
+    ]
+  );
+
+  const handleToggleSuggestionPanel = useCallback((estrofeNumero: number) => {
+    setOpenSuggestionPanels((current) => ({
+      ...current,
+      [estrofeNumero]: !current[estrofeNumero],
+    }));
+  }, []);
+
+  const handleToggleVerseSelection = useCallback(
+    (estrofeNumero: number, versoIndex: number) => {
+      setVerseSelections((current) => {
+        const selected = current[estrofeNumero] || [];
+        const nextSelection = selected.includes(versoIndex)
+          ? selected.filter((index) => index !== versoIndex)
+          : selected.length < 2
+          ? [...selected, versoIndex].sort((a, b) => a - b)
+          : selected;
+        return { ...current, [estrofeNumero]: nextSelection };
+      });
+      setSuggestionResults((current) => {
+        if (!current[estrofeNumero]) return current;
+        const next = { ...current };
+        delete next[estrofeNumero];
+        return next;
+      });
+      setSuggestionErrors((current) => {
+        if (!current[estrofeNumero]) return current;
+        const next = { ...current };
+        delete next[estrofeNumero];
+        return next;
+      });
+    },
+    []
+  );
+
+  const handleSuggestionNoteChange = useCallback(
+    (estrofeNumero: number, value: string) => {
+      invalidateSuggestionRequest();
+      setSuggestionNotes((current) => ({
+        ...current,
+        [estrofeNumero]: value,
+      }));
+      setSuggestionResults((current) => {
+        if (!current[estrofeNumero]) return current;
+        const next = { ...current };
+        delete next[estrofeNumero];
+        return next;
+      });
+      setSuggestionErrors((current) => {
+        if (!current[estrofeNumero]) return current;
+        const next = { ...current };
+        delete next[estrofeNumero];
+        return next;
+      });
+    },
+    [invalidateSuggestionRequest]
+  );
+
+  const handleRequestSuggestions = useCallback(
+    async (estrofeNumero: number) => {
+      if (!cordelData || !meaningMapText.trim()) return;
+      const selectedIndexes = verseSelections[estrofeNumero] || [];
+      if (selectedIndexes.length < 1 || selectedIndexes.length > 2) return;
+
+      const requestToken = suggestionRequestTokenRef.current + 1;
+      suggestionRequestTokenRef.current = requestToken;
+      setSuggestionLoadingStanza(estrofeNumero);
+      setSuggestionErrors((current) => {
+        const next = { ...current };
+        delete next[estrofeNumero];
+        return next;
+      });
+      setSuggestionResults((current) => {
+        const next = { ...current };
+        delete next[estrofeNumero];
+        return next;
+      });
+
+      try {
+        const data = await apiPost("/api/suggest", {
+          cordel: cordelData,
+          meaningMap: simplifiedMeaningMapText || meaningMapText,
+          plan: compositionPlan,
+          analysis: analysisDirty ? null : analysisData,
+          stanzaNumber: estrofeNumero,
+          verseNumbers: selectedIndexes.map((index) => index + 1),
+          translatorGoal: suggestionNotes[estrofeNumero] || "",
+        });
+        if (suggestionRequestTokenRef.current !== requestToken) return;
+
+        const responseIndexes = Array.isArray(data.verseNumbers)
+          ? data.verseNumbers.map((number: number) => Number(number) - 1)
+          : selectedIndexes;
+        setSuggestionResults((current) => ({
+          ...current,
+          [estrofeNumero]: {
+            verseIndexes: responseIndexes,
+            alternatives: data.alternatives as LocalSuggestionAlternative[],
+            model: data.model,
+          },
+        }));
+        setWorkflowModels((current) => ({
+          ...current,
+          [`sugestoes_estrofe_${estrofeNumero}`]: data.model,
+        }));
+        appendHistory({
+          tipo: "revisao",
+          titulo: `Sugestões localizadas solicitadas para a estrofe ${estrofeNumero}`,
+          detalhes: [
+            `Versos: ${selectedIndexes.map((index) => index + 1).join(", ")}`,
+            `Modelo: ${data.model}`,
+            "Três alternativas foram apresentadas sem alterar o cordel.",
+          ],
+        });
+      } catch (requestError: any) {
+        if (suggestionRequestTokenRef.current !== requestToken) return;
+        setSuggestionErrors((current) => ({
+          ...current,
+          [estrofeNumero]:
+            requestError?.message || "Não foi possível gerar sugestões.",
+        }));
+      } finally {
+        if (suggestionRequestTokenRef.current === requestToken) {
+          setSuggestionLoadingStanza(null);
+        }
+      }
+    },
+    [
+      analysisData,
+      analysisDirty,
+      appendHistory,
+      compositionPlan,
+      cordelData,
+      meaningMapText,
+      simplifiedMeaningMapText,
+      suggestionNotes,
+      verseSelections,
+    ]
+  );
+
+  const handleAcceptSuggestion = useCallback(
+    (estrofeNumero: number, suggestionIndex: number) => {
+      const result = suggestionResults[estrofeNumero];
+      const alternative = result?.alternatives[suggestionIndex];
+      const stanza = cordelData?.estrofes.find(
+        (item) => item.numero === estrofeNumero
+      );
+      if (!result || !alternative || !stanza) return;
+
+      invalidateSuggestionRequest();
+      const previousVerses = [...stanza.versos];
+      const nextVerses = [...stanza.versos];
+      result.verseIndexes.forEach((verseIndex, offset) => {
+        nextVerses[verseIndex] = alternative.versos[offset];
+      });
+      setStanzaUndoHistory((current) => ({
+        ...current,
+        [estrofeNumero]: [
+          ...(current[estrofeNumero] || []),
+          previousVerses,
+        ].slice(-20),
+      }));
+      setCordelData((current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          estrofes: current.estrofes.map((item) =>
+            item.numero === estrofeNumero
+              ? { ...item, versos: nextVerses }
+              : item
+          ),
+        };
+      });
+      setSuggestionResults((current) => {
+        const next = { ...current };
+        delete next[estrofeNumero];
+        return next;
+      });
+      setVerseSelections((current) => ({ ...current, [estrofeNumero]: [] }));
+      setSuggestionErrors((current) => {
+        const next = { ...current };
+        delete next[estrofeNumero];
+        return next;
+      });
+      if (analysisData) setAnalysisDirty(true);
+      setAudioUrl(null);
+      setAudioFileName(null);
+      setAudioPathname(null);
+      setAudioError("");
+      clearUserAudio();
+      appendHistory({
+        tipo: "edicao",
+        titulo: `Sugestão da IA aceita na estrofe ${estrofeNumero}`,
+        detalhes: result.verseIndexes.flatMap((verseIndex, offset) => [
+          `Verso ${verseIndex + 1} antes: "${previousVerses[verseIndex]}"`,
+          `Verso ${verseIndex + 1} depois: "${alternative.versos[offset]}"`,
+        ]),
+      });
+    },
+    [
+      analysisData,
+      appendHistory,
+      clearUserAudio,
+      cordelData,
+      invalidateSuggestionRequest,
+      suggestionResults,
+    ]
+  );
+
+  const handleRejectSuggestion = useCallback(
+    (estrofeNumero: number, suggestionIndex: number) => {
+      setSuggestionResults((current) => {
+        const result = current[estrofeNumero];
+        if (!result) return current;
+        const alternatives = result.alternatives.filter(
+          (_, index) => index !== suggestionIndex
+        );
+        const next = { ...current };
+        if (alternatives.length) {
+          next[estrofeNumero] = { ...result, alternatives };
+        } else {
+          delete next[estrofeNumero];
+        }
+        return next;
+      });
+    },
+    []
+  );
+
+  const handleDismissSuggestions = useCallback((estrofeNumero: number) => {
+    setSuggestionResults((current) => {
+      const next = { ...current };
+      delete next[estrofeNumero];
+      return next;
+    });
+  }, []);
 
   const handleSelectPsalm = useCallback((psalm: number) => {
     setPsalmNumberInput(String(psalm));
@@ -1777,16 +2676,12 @@ export default function ForjaDeCordel() {
   }, []);
 
   const handleTextUpload = useCallback(
-    async (kind: "cordel" | "meaning-map", file: File | null) => {
+    async (file: File | null) => {
       if (!file) return;
 
       try {
         const text = await readUploadedTextFile(file);
-        if (kind === "cordel") {
-          setExistingCordelInput(text);
-        } else {
-          setMeaningMapInput(text);
-        }
+        setMeaningMapInput(text);
         setError("");
       } catch (e: any) {
         setError(e?.message || "Não foi possível ler o arquivo enviado.");
@@ -1796,8 +2691,10 @@ export default function ForjaDeCordel() {
   );
 
   const reportText = buildReportText({
-    inputMode,
     meaningMapText,
+    simplifiedMeaningMapText,
+    compositionPlan,
+    workflowModels,
     cordelData,
     analysisData,
     analysisDirty,
@@ -1826,24 +2723,37 @@ export default function ForjaDeCordel() {
         const data = await apiGet(`/api/psalms/${psalm}`);
         const record: SavedPsalmRecord = data.record;
         const normalizedAnalysis = normalizeAnalysisData(record.analysisData);
+        let storedProcessMap = record.simplifiedMeaningMapText || "";
+        if (!storedProcessMap && record.meaningMapText.trim()) {
+          try {
+            const simplifyResponse = await apiPost("/api/simplify", {
+              meaningMap: record.meaningMapText,
+            });
+            storedProcessMap = String(simplifyResponse.simplifiedMap || "");
+          } catch {
+            storedProcessMap = record.meaningMapText;
+          }
+        }
 
-        setInputMode("analyze-existing");
         setMeaningMapInput(record.meaningMapText);
         setMeaningMapText(record.meaningMapText);
-        setExistingCordelInput(cordelToPlainText(record.cordelData));
+        setSimplifiedMeaningMapText(storedProcessMap);
         setPsalmNumberInput(String(record.salmo));
         setCordelData(record.cordelData);
+        setCompositionPlan(record.compositionPlan || null);
+        setWorkflowModels(record.workflowModels || {});
         setAnalysisData(record.analysisData ? normalizedAnalysis : null);
         setAnalysisDirty(record.analysisDirty);
         setHistoryEntries(record.historyEntries);
         setRevisionCount(record.revisionCount);
-        setPhase(record.analysisData && !record.analysisDirty ? "analyzed" : "composed");
-        setActiveTab("cordel");
+        setPhase("completed");
+        setActiveTab(record.analysisData ? "metrica" : "relatorio");
         setAudioUrl(record.audioUrl);
         setAudioFileName(record.audioFileName);
         setAudioPathname(record.audioPathname || null);
         setAudioError("");
         clearUserAudio();
+        resetLocalEditingState();
         setCatalogError("");
         setError("");
       } catch (e: any) {
@@ -1853,12 +2763,12 @@ export default function ForjaDeCordel() {
         setCatalogSyncing(false);
       }
     },
-    [clearUserAudio, cordelData]
+    [clearUserAudio, cordelData, resetLocalEditingState]
   );
 
   const handleSaveCurrentPsalm = useCallback(async () => {
     if (!cordelData) {
-      setError("Gere ou importe um cordel antes de salvá-lo no catálogo.");
+      setError("Forje um cordel antes de salvá-lo no catálogo.");
       return;
     }
 
@@ -1890,11 +2800,14 @@ export default function ForjaDeCordel() {
       audioUrl && /^https?:\/\//i.test(audioUrl) ? audioUrl : null;
     const nextRecord: SavedPsalmRecord = {
       salmo: currentPsalmNumber,
-      modo: "analyze-existing",
+      modo: "compose",
       status: derivePsalmStatus({ analysisData, analysisDirty }),
       salvoEm: new Date().toISOString(),
       analysisDirty,
       meaningMapText: meaningMapText || meaningMapInput,
+      simplifiedMeaningMapText,
+      compositionPlan,
+      workflowModels,
       cordelData,
       analysisData,
       historyEntries: nextHistory,
@@ -1935,17 +2848,35 @@ export default function ForjaDeCordel() {
     currentPsalmNumber,
     currentSavedItem,
     historyEntries,
-    inputMode,
     meaningMapInput,
     meaningMapText,
+    simplifiedMeaningMapText,
+    compositionPlan,
     reportText,
     revisionCount,
+    workflowModels,
   ]);
 
   const handleCopyReport = useCallback(() => {
     if (!reportText) return;
     navigator.clipboard.writeText(reportText);
   }, [reportText]);
+
+  const handleCopyMeaningMap = useCallback(() => {
+    const sourceMap = meaningMapInput.trim() || meaningMapText.trim();
+    if (!sourceMap) return;
+    navigator.clipboard.writeText(sourceMap);
+  }, [meaningMapInput, meaningMapText]);
+
+  const handleDownloadMeaningMap = useCallback(() => {
+    const sourceMap = meaningMapInput.trim() || meaningMapText.trim();
+    if (!sourceMap) return;
+    downloadTextFile(
+      sourceMap,
+      buildMeaningMapFileName(currentPsalmNumber),
+      "text/markdown"
+    );
+  }, [currentPsalmNumber, meaningMapInput, meaningMapText]);
 
   const handleDownloadReport = useCallback(() => {
     if (!reportText) return;
@@ -1977,10 +2908,9 @@ export default function ForjaDeCordel() {
 
   const hasIssues = hasAnalysisIssues(analysisData);
 
-  const showResults = ["composed", "analyzed"].includes(phase);
+  const showResults = phase === "completed";
 
-  const tabs: { id: "cordel" | "metrica" | "fidelidade" | "relatorio"; label: string; always: boolean }[] = [
-    { id: "cordel", label: "Cordel", always: true },
+  const tabs: { id: "metrica" | "fidelidade" | "relatorio"; label: string; always: boolean }[] = [
     { id: "metrica", label: "Métrica", always: false },
     { id: "fidelidade", label: "Fidelidade", always: false },
     { id: "relatorio", label: "Relatório", always: true },
@@ -1994,7 +2924,7 @@ export default function ForjaDeCordel() {
       : "Salvar no Catálogo";
   const canSaveCurrentPsalm = !!cordelData && currentPsalmNumber != null;
   const inputInstruction =
-    "Cole o cordel completo e o Mapa de Significado em seus campos separados. O cordel será analisado diretamente, e o mapa servirá para a checagem de fidelidade teológica.";
+    "Cole ou suba o Mapa de Significado exatamente como saiu do Portal. A Forja fará uma redução extrativa, sem resumir nem reescrever o texto: a composição usará esse recorte literal, e a auditoria teológica continuará comparando o cordel ao Mapa original completo.";
 
   // ── Render ──
 
@@ -2022,107 +2952,93 @@ export default function ForjaDeCordel() {
         {/* INPUT */}
         {(phase === "input" || phase === "error") && (
           <section className="rounded-[24px] border-[3px] border-preto bg-parchment px-4 py-5 shadow-[inset_0_0_0_1px_rgba(15,12,8,0.12)] sm:px-6 sm:py-6">
-            <label className="font-heading text-xs font-semibold text-brown-mid uppercase tracking-widest block mb-2">
-              Modo de Trabalho
-            </label>
-            <div className="mb-3 inline-flex rounded-full border-2 border-preto bg-preto px-4 py-2 font-heading text-sm font-bold text-cream">
-              Analisar Cordel
+            <div className="mb-2 font-heading text-xs font-semibold uppercase tracking-widest text-brown-mid">
+              Nova Composição
             </div>
+            <h2 className="font-heading text-2xl font-bold uppercase tracking-[0.05em] text-preto sm:text-3xl">
+              Do Mapa ao Cordel
+            </h2>
             <div className="mb-4 rounded-[18px] border-2 border-preto bg-[var(--parchment-dark)] px-4 py-3 font-body text-[13px] leading-relaxed text-preto">
               {inputInstruction}
             </div>
-            <div className="space-y-4">
-              <div>
-                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                  <label className="font-heading text-xs font-semibold text-brown-mid uppercase tracking-widest block">
-                    Cordel
-                  </label>
-                  <div className="flex items-center gap-2">
-                    <input
-                      ref={cordelFileInputRef}
-                      type="file"
-                      accept=".txt,.md,.text,.docx,.doc"
-                      className="hidden"
-                      onChange={(e) => {
-                        void handleTextUpload("cordel", e.target.files?.[0] || null);
-                        e.currentTarget.value = "";
-                      }}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => cordelFileInputRef.current?.click()}
-                      className="rounded-full border border-preto bg-[var(--parchment-dark)] px-3 py-1.5 font-heading text-xs font-semibold text-preto transition-all"
-                    >
-                      Subir Arquivo
-                    </button>
-                  </div>
+            <div>
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <label className="block font-heading text-xs font-semibold uppercase tracking-widest text-brown-mid">
+                  Mapa de Significado Completo
+                </label>
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    ref={meaningMapFileInputRef}
+                    type="file"
+                    accept=".txt,.md,.text,.docx"
+                    className="hidden"
+                    onChange={(e) => {
+                      void handleTextUpload(e.target.files?.[0] || null);
+                      e.currentTarget.value = "";
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => meaningMapFileInputRef.current?.click()}
+                    className="rounded-full border border-preto bg-[var(--parchment-dark)] px-3 py-1.5 font-heading text-xs font-semibold text-preto transition-all"
+                  >
+                    Subir Arquivo
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCopyMeaningMap}
+                    disabled={!meaningMapInput.trim()}
+                    className="rounded-full border border-preto bg-cream px-3 py-1.5 font-heading text-xs font-semibold text-preto transition-all disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Copiar Mapa
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDownloadMeaningMap}
+                    disabled={!meaningMapInput.trim()}
+                    className="rounded-full border border-preto bg-cream px-3 py-1.5 font-heading text-xs font-semibold text-preto transition-all disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Baixar Mapa
+                  </button>
                 </div>
-                <textarea
-                  className="w-full min-h-[240px] resize-y rounded-[18px] border-2 border-preto bg-cream p-4 font-body text-sm leading-relaxed text-preto shadow-[inset_0_0_0_1px_rgba(15,12,8,0.08)]"
-                  value={existingCordelInput}
-                  onChange={(e) => setExistingCordelInput(e.target.value)}
-                  placeholder="Cole aqui o cordel completo (sextilhas)..."
-                />
-                <p className="mt-2 font-body text-xs text-brown-mid">
-                  Você pode colar o texto ou subir um arquivo `.txt`, `.md` ou `.docx`.
-                </p>
               </div>
-              <div>
-                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                  <label className="font-heading text-xs font-semibold text-brown-mid uppercase tracking-widest block">
-                    Mapa de Significado Completo
-                  </label>
-                  <div className="flex items-center gap-2">
-                    <input
-                      ref={meaningMapFileInputRef}
-                      type="file"
-                      accept=".txt,.md,.text,.docx,.doc"
-                      className="hidden"
-                      onChange={(e) => {
-                        void handleTextUpload("meaning-map", e.target.files?.[0] || null);
-                        e.currentTarget.value = "";
-                      }}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => meaningMapFileInputRef.current?.click()}
-                      className="rounded-full border border-preto bg-[var(--parchment-dark)] px-3 py-1.5 font-heading text-xs font-semibold text-preto transition-all"
-                    >
-                      Subir Arquivo
-                    </button>
-                  </div>
-                </div>
-                <textarea
-                  className="w-full min-h-[240px] resize-y rounded-[18px] border-2 border-preto bg-cream p-4 font-body text-sm leading-relaxed text-preto shadow-[inset_0_0_0_1px_rgba(15,12,8,0.08)]"
-                  value={meaningMapInput}
-                  onChange={(e) => setMeaningMapInput(e.target.value)}
-                  placeholder="Cole aqui o Mapa de Significado completo (Níveis 1, 2 e 3)..."
-                />
-                <p className="mt-2 font-body text-xs text-brown-mid">
-                  Você pode colar o texto ou subir um arquivo `.txt`, `.md` ou `.docx`.
-                </p>
+              <textarea
+                className="min-h-[360px] w-full resize-y rounded-[18px] border-2 border-preto bg-cream p-4 font-body text-sm leading-relaxed text-preto shadow-[inset_0_0_0_1px_rgba(15,12,8,0.08)]"
+                value={meaningMapInput}
+                onChange={(e) => setMeaningMapInput(e.target.value)}
+                maxLength={120000}
+                placeholder="Cole aqui o Mapa de Significado completo, incluindo os Níveis 1, 2 e 3..."
+              />
+              <div className="mt-3 grid gap-2 font-mono text-[11px] text-brown-mid sm:grid-cols-4">
+                <span>01 · Texto direto do Portal</span>
+                <span>02 · Redução automática e literal</span>
+                <span>03 · .txt, .md ou .docx</span>
+                <span>04 · {meaningMapInput.length.toLocaleString("pt-BR")}/120.000 caracteres</span>
               </div>
             </div>
             {error && (
-              <div className="mt-3 whitespace-pre-wrap rounded-[16px] border-2 border-preto bg-[var(--parchment-dark)] px-4 py-3 font-body text-[13px] text-preto">
+              <div role="alert" className="mt-3 whitespace-pre-wrap rounded-[16px] border-2 border-preto bg-[var(--parchment-dark)] px-4 py-3 font-body text-[13px] text-preto">
                 {error}
               </div>
             )}
             <div className="mt-4">
               <button
-                onClick={handleAnalyzeExisting}
-                disabled={!existingCordelInput.trim() || !meaningMapInput.trim()}
+                onClick={handleCompose}
+                disabled={!meaningMapInput.trim()}
                 className="btn-primary cursor-pointer rounded-full border-2 border-preto bg-preto px-6 py-2.5 font-heading text-sm font-bold text-cream transition-all disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Analisar Cordel
+                Forjar Cordel
               </button>
+              <span className="ml-3 font-body text-xs text-brown-mid">
+                Inclui preparação do Mapa, composição e auditoria independente.
+              </span>
             </div>
           </section>
         )}
 
         {/* LOADING */}
         {isLoading && (
-          <div className="rounded-[24px] border-[3px] border-preto bg-parchment px-6 py-12 text-center">
+          <div aria-live="polite" className="rounded-[24px] border-[3px] border-preto bg-parchment px-6 py-12 text-center">
             <div className="inline-block w-6 h-6 border-[3px] border-parchment-dark border-t-telha rounded-full animate-spin-slow" />
             <p className="font-heading text-[15px] text-brown-mid mt-3 mb-1">
               {phaseLabels[phase] || "Processando"}…
@@ -2130,122 +3046,173 @@ export default function ForjaDeCordel() {
             <p className="font-mono text-3xl font-bold text-telha m-0">
               {fmtTime(elapsed)}
             </p>
+            <PipelineProgress phase={phase} revisionCount={revisionCount} />
+            <p className="mx-auto mt-5 max-w-xl font-body text-xs leading-relaxed text-brown-mid">
+              {phase === "simplifying"
+                ? "A Forja está apenas removendo links, marcas do Portal e blocos dispensáveis. Nenhuma frase do Mapa é resumida, parafraseada ou regenerada."
+                : phase === "revising"
+                ? "A revisão por IA é opcional e será seguida por uma nova auditoria independente."
+                : "Depois da composição, a Forja executa uma auditoria independente contra o Mapa original completo e entrega o resultado para lapidação humana."}
+            </p>
           </div>
         )}
 
         {/* RESULTS */}
         {showResults && cordelData && (
           <section className="rounded-[24px] border-[3px] border-preto bg-parchment px-4 py-5 shadow-[inset_0_0_0_1px_rgba(15,12,8,0.12)] sm:px-6 sm:py-6">
-            <PipelineBadges phase={phase} revisionCount={revisionCount} />
+            <CordelView
+              data={cordelData}
+              stanzaUndoHistory={stanzaUndoHistory}
+              verseSelections={verseSelections}
+              suggestionResults={suggestionResults}
+              suggestionNotes={suggestionNotes}
+              suggestionErrors={suggestionErrors}
+              openSuggestionPanels={openSuggestionPanels}
+              suggestionLoadingStanza={suggestionLoadingStanza}
+              audioUrl={audioUrl}
+              userAudio={userAudio}
+              audioLoading={audioLoading}
+              userAudioRecording={userAudioRecording}
+              audioError={audioError}
+              userAudioError={userAudioError}
+              onVerseChange={handleCordelVerseChange}
+              onVerseCommit={handleCordelVerseCommit}
+              onUndoStanza={handleUndoStanza}
+              onToggleSuggestionPanel={handleToggleSuggestionPanel}
+              onToggleVerseSelection={handleToggleVerseSelection}
+              onSuggestionNoteChange={handleSuggestionNoteChange}
+              onRequestSuggestions={handleRequestSuggestions}
+              onAcceptSuggestion={handleAcceptSuggestion}
+              onRejectSuggestion={handleRejectSuggestion}
+              onDismissSuggestions={handleDismissSuggestions}
+              onListen={handleListen}
+              onRecord={handleRecord}
+            />
 
-            {/* Tabs */}
-            <div className="mb-5 flex gap-2 border-b-2 border-preto/20 pb-3">
-              {tabs.map((t) => {
-                const enabled = t.always || !!analysisData;
-                return (
-                  <button
-                    key={t.id}
-                    onClick={() => enabled && setActiveTab(t.id)}
-                    className={`rounded-full border-2 px-4 py-2 font-heading text-sm font-semibold transition-all ${
-                      activeTab === t.id
-                        ? "border-preto bg-preto text-cream"
-                        : enabled
-                        ? "cursor-pointer border-preto bg-cream text-preto"
-                        : "cursor-default border-preto/15 bg-cream text-brown-light/60"
-                    }`}
-                  >
-                    {t.label}
-                  </button>
-                );
-              })}
+            <div className="mt-10 border-t-[3px] border-preto pt-7">
+              <PipelineBadges revisionCount={revisionCount} />
+              <div className="mb-4">
+                <div className="font-heading text-xs font-semibold uppercase tracking-widest text-brown-mid">
+                  Controle de Qualidade
+                </div>
+                <h2 className="mt-1 font-heading text-2xl font-bold uppercase tracking-[0.05em] text-preto sm:text-3xl">
+                  Relatórios da Auditoria
+                </h2>
+              </div>
+
+              {analysisDirty && analysisData ? (
+                <div className="mb-4 rounded-[18px] border-2 border-preto bg-[var(--amber-light)] px-4 py-3 font-body text-[13px] leading-relaxed text-preto">
+                  Você editou o cordel após a última análise. Os relatórios podem estar desatualizados até você analisar novamente.
+                </div>
+              ) : null}
+
+              <div className="mb-5 flex flex-wrap gap-2 border-b-2 border-preto/20 pb-3">
+                {tabs.map((tab) => {
+                  const enabled = tab.always || !!analysisData;
+                  return (
+                    <button
+                      key={tab.id}
+                      onClick={() => enabled && setActiveTab(tab.id)}
+                      aria-pressed={activeTab === tab.id}
+                      disabled={!enabled}
+                      className={`rounded-full border-2 px-4 py-2 font-heading text-sm font-semibold transition-all ${
+                        activeTab === tab.id
+                          ? "border-preto bg-preto text-cream"
+                          : enabled
+                          ? "cursor-pointer border-preto bg-cream text-preto"
+                          : "cursor-default border-preto/15 bg-cream text-brown-light/60"
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {activeTab === "metrica" && analysisData && (
+                <MetricaView data={analysisData} />
+              )}
+              {activeTab === "fidelidade" && analysisData && (
+                <FidelidadeView data={analysisData} cordelData={cordelData} />
+              )}
+              {activeTab === "relatorio" && (
+                <ReportView
+                  reportText={reportText}
+                  cordelText={cordelText}
+                  psalmNumber={currentPsalmNumber}
+                  historyEntries={historyEntries}
+                  analysisData={analysisData}
+                  analysisDirty={analysisDirty}
+                  audioUrl={audioUrl}
+                  audioFileName={audioFileName}
+                  userAudio={userAudio}
+                  onCopyReport={handleCopyReport}
+                  onDownloadReport={handleDownloadReport}
+                  onDownloadCordel={handleDownloadCordel}
+                  onDownloadElevenLabsAudio={handleDownloadElevenLabsAudio}
+                  onDownloadUserAudio={handleDownloadUserAudio}
+                />
+              )}
             </div>
-
-            {/* Tab content */}
-            {activeTab === "cordel" && (
-              <CordelView
-                data={cordelData}
-                analysisData={analysisData}
-                analysisDirty={analysisDirty}
-                audioUrl={audioUrl}
-                userAudio={userAudio}
-                audioLoading={audioLoading}
-                userAudioRecording={userAudioRecording}
-                audioError={audioError}
-                userAudioError={userAudioError}
-                onVerseChange={handleCordelVerseChange}
-                onVerseCommit={handleCordelVerseCommit}
-                onListen={handleListen}
-                onRecord={handleRecord}
-              />
-            )}
-            {activeTab === "metrica" && analysisData && (
-              <MetricaView data={analysisData} />
-            )}
-            {activeTab === "fidelidade" && analysisData && (
-              <FidelidadeView data={analysisData} cordelData={cordelData} />
-            )}
-            {activeTab === "relatorio" && (
-              <ReportView
-                reportText={reportText}
-                cordelText={cordelText}
-                psalmNumber={currentPsalmNumber}
-                historyEntries={historyEntries}
-                analysisData={analysisData}
-                analysisDirty={analysisDirty}
-                audioUrl={audioUrl}
-                audioFileName={audioFileName}
-                userAudio={userAudio}
-                onCopyReport={handleCopyReport}
-                onDownloadReport={handleDownloadReport}
-                onDownloadCordel={handleDownloadCordel}
-                onDownloadElevenLabsAudio={handleDownloadElevenLabsAudio}
-                onDownloadUserAudio={handleDownloadUserAudio}
-              />
-            )}
 
             {/* Action buttons */}
             <div className="mt-5 flex gap-2.5 flex-wrap">
-              {phase === "composed" && (
+              {analysisDirty && (
                 <button
                   onClick={handleAnalyze}
                   className="btn-primary cursor-pointer rounded-full border-2 border-preto bg-preto px-5 py-2.5 font-heading text-sm font-bold text-cream transition-all"
                 >
-                  {analysisDirty ? "Analisar Métrica e Fidelidade Novamente" : "Analisar Métrica e Fidelidade"}
+                  Reanalisar Após Edição
                 </button>
               )}
-              {phase === "analyzed" && hasIssues && revisionCount < 3 && (
+              {!analysisDirty && hasIssues && (
                 <button
                   onClick={handleRevise}
                   className="btn-primary cursor-pointer rounded-full border-2 border-preto bg-preto px-5 py-2.5 font-heading text-sm font-bold text-cream transition-all"
                 >
-                  Revisar ({3 - revisionCount} restantes)
+                  Revisar todos os problemas com IA
                 </button>
               )}
               <button
                 onClick={() => {
                   setPhase("input");
-                  setInputMode("analyze-existing");
                   setError("");
                   setAnalysisDirty(false);
                   setHistoryEntries([]);
+                  setSimplifiedMeaningMapText("");
+                  setCompositionPlan(null);
+                  setWorkflowModels({});
+                  setCordelData(null);
+                  setAnalysisData(null);
+                  setRevisionCount(0);
                   setAudioUrl(null);
                   setAudioFileName(null);
                   setAudioPathname(null);
                   setAudioError("");
                   clearUserAudio();
-                  setActiveTab("cordel");
+                  resetLocalEditingState();
+                  setActiveTab("metrica");
                 }}
                 className="btn-secondary cursor-pointer rounded-full border-2 border-preto bg-cream px-5 py-2.5 font-heading text-sm font-bold text-preto transition-all"
               >
-                Novo texto
+                Novo Mapa
+              </button>
+              <button
+                onClick={handleCopyMeaningMap}
+                className="btn-secondary cursor-pointer rounded-full border-2 border-preto bg-cream px-5 py-2.5 font-heading text-sm font-bold text-preto transition-all"
+              >
+                Copiar Mapa
+              </button>
+              <button
+                onClick={handleDownloadMeaningMap}
+                className="btn-secondary cursor-pointer rounded-full border-2 border-preto bg-cream px-5 py-2.5 font-heading text-sm font-bold text-preto transition-all"
+              >
+                Baixar Mapa
               </button>
               {cordelData && (
                 <button
                   onClick={() => {
-                    const text = cordelData.estrofes
-                      .map((e) => e.versos.join("\n"))
-                      .join("\n\n");
-                    navigator.clipboard.writeText(text);
+                    navigator.clipboard.writeText(cordelToPlainText(cordelData));
                   }}
                   className="btn-secondary cursor-pointer rounded-full border-2 border-preto bg-cream px-5 py-2.5 font-heading text-sm font-bold text-preto transition-all"
                 >

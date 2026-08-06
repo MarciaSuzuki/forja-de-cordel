@@ -5,7 +5,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "Forja de Cordel — Tradução Oral Performática da Bíblia",
   description:
-    "Tradução oral performática da Bíblia em sextilhas de redondilha maior, com análise métrica e fidelidade semântica.",
+    "Composição e auditoria de tradução oral performática da Bíblia em sextilhas de redondilha maior.",
 };
 
 export default function RootLayout({
