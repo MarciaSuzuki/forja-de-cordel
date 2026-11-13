@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { LOCAL_SUGGESTIONS_SCHEMA } from "@/lib/ai-schemas";
 import { compactMeaningMap, extractLevel } from "@/lib/extract";
-import { callOpenAIJSON } from "@/lib/openai";
+import { callOpenAIJSON, OpenAIIncompleteResponseError } from "@/lib/openai";
 import { LOCAL_SUGGEST_SYSTEM } from "@/lib/prompts";
 import { requireCordel, requireMeaningMap } from "@/lib/request-validation";
 
@@ -163,16 +163,59 @@ export async function POST(req: NextRequest) {
       2
     )}\n\nFORMA GLOBAL\n${level1 || "Não informada."}\n\nPROPOSIÇÕES AUTORIZADAS — FONTE EXCLUSIVA\n${semanticSource}`;
 
-    const result = await callOpenAIJSON<LocalSuggestionResponse>({
-      role: "reviser",
-      instructions: LOCAL_SUGGEST_SYSTEM,
-      input,
-      schemaName: `sugestoes_estrofe_${stanzaNumber}`,
-      schema: LOCAL_SUGGESTIONS_SCHEMA,
-      maxOutputTokens: 5_000,
-      reasoningEffort: "medium",
-      requestTimeoutMs: 90_000,
-    });
+    // Leave time for validation and the response within this route's 120s limit.
+    const deadline = Date.now() + 110_000;
+    const request = (
+      maxOutputTokens: number,
+      reasoningEffort: "medium" | "low",
+      requestTimeoutMs: number
+    ) =>
+      callOpenAIJSON<LocalSuggestionResponse>({
+        role: "reviser",
+        instructions: LOCAL_SUGGEST_SYSTEM,
+        input,
+        schemaName: `sugestoes_estrofe_${stanzaNumber}`,
+        schema: LOCAL_SUGGESTIONS_SCHEMA,
+        maxOutputTokens,
+        reasoningEffort,
+        requestTimeoutMs,
+      });
+
+    let result: Awaited<ReturnType<typeof request>>;
+    try {
+      result = await request(12_000, "low", 60_000);
+    } catch (error) {
+      if (
+        !(error instanceof OpenAIIncompleteResponseError) ||
+        error.reason !== "max_output_tokens"
+      ) {
+        throw error;
+      }
+
+      const retryTimeoutMs = Math.min(45_000, deadline - Date.now());
+      if (retryTimeoutMs < 30_000) {
+        throw new Error(
+          "A IA atingiu o limite das sugestões e não há tempo para outra tentativa. Tente novamente."
+        );
+      }
+      console.warn("[suggest] repetindo após limite de tokens", {
+        stanzaNumber,
+        selectedVerseCount: verseNumbers.length,
+      });
+      try {
+        result = await request(20_000, "low", retryTimeoutMs);
+      } catch (retryError) {
+        if (
+          retryError instanceof OpenAIIncompleteResponseError &&
+          retryError.reason === "max_output_tokens"
+        ) {
+          throw new Error(
+            "A IA atingiu o limite das sugestões mesmo após uma nova tentativa. Tente novamente ou selecione apenas um verso."
+          );
+        }
+        throw retryError;
+      }
+    }
 
     const alternatives = Array.isArray(result.data.alternativas)
       ? result.data.alternativas

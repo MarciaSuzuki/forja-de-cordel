@@ -5,6 +5,17 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 285_000;
 export type OpenAIRole = "planner" | "composer" | "analyzer" | "reviser";
 export type ReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh" | "max";
 
+export class OpenAIIncompleteResponseError extends Error {
+  constructor(
+    public readonly role: OpenAIRole,
+    public readonly reason: string
+  ) {
+    super(`A etapa ${role} terminou incompleta: ${reason}.`);
+    this.name = "OpenAIIncompleteResponseError";
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
 interface StructuredCallOptions<T> {
   role: OpenAIRole;
   instructions: string;
@@ -152,10 +163,9 @@ export async function callOpenAIJSON<T>({
 
   const body = (await response.json()) as OpenAIResponseBody;
   if (body.status === "incomplete") {
-    throw new Error(
-      `A etapa ${role} terminou incompleta: ${
-        body.incomplete_details?.reason || "motivo não informado"
-      }.`
+    throw new OpenAIIncompleteResponseError(
+      role,
+      body.incomplete_details?.reason || "motivo não informado"
     );
   }
 
