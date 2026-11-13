@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { listPsalmCatalog } from "@/lib/psalm-store";
 
 export const maxDuration = 30;
+export const revalidate = 0;
 
 export async function GET() {
   try {
